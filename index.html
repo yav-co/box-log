@@ -4,6 +4,12 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <meta name="theme-color" content="#05070D"/>
+<!-- PWA: ホーム画面から全画面(ネイティブアプリ風)で起動するための設定 -->
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="BOX-LOG"/>
+<link rel="manifest" href='data:application/manifest+json,{"name":"BOX-LOG","short_name":"BOX-LOG","display":"standalone","background_color":"%2305070D","theme_color":"%2305070D","start_url":"."}'/>
 <title>BOX-LOG — 練習メモ&タイムライン</title>
 <style>
   html, body { margin: 0; padding: 0; background: #05070D; }
@@ -241,6 +247,49 @@ function GloveMark() {
   );
 }
 
+// YouTubeインライン再生カード(タップでその場再生・全画面に飛ばない)
+function YTCard({ url, maxWidth = 260 }) {
+  const [playing, setPlaying] = useState(false);
+  const id = ytId(url);
+  if (!id) return null;
+  if (playing) {
+    return (
+      <div style={{ maxWidth, width: "100%", marginTop: 8 }}>
+        <div style={{
+          position: "relative", width: "100%", aspectRatio: "16/9",
+          border: `1px solid ${C.blue}`, borderRadius: 10, overflow: "hidden",
+          background: "#000", boxShadow: "0 0 16px rgba(46,168,255,0.25)",
+        }}>
+          <iframe
+            src={`https://www.youtube.com/embed/${id}?playsinline=1&autoplay=1&rel=0`}
+            title="練習動画"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowFullScreen
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+          <button onClick={() => window.open(url, "_blank")} style={{ fontSize: 11, color: C.mut, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>YouTubeで開く</button>
+          <button onClick={() => setPlaying(false)} style={{ fontSize: 11, color: C.mut, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>閉じる</button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <button onClick={() => setPlaying(true)} aria-label="動画をこの場で再生" style={{
+      display: "block", width: "100%", maxWidth, position: "relative",
+      border: `1px solid ${C.blue}`, borderRadius: 10, overflow: "hidden",
+      padding: 0, marginTop: 8, cursor: "pointer", background: "#000",
+    }}>
+      <img src={`https://img.youtube.com/vi/${id}/mqdefault.jpg`} alt="練習動画"
+        style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover", opacity: 0.85 }}/>
+      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <span style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(5,7,13,0.75)", border: `2px solid ${C.cyan}`, display: "flex", alignItems: "center", justifyContent: "center", color: C.cyan, fontSize: 16 }}>▶</span>
+      </span>
+    </button>
+  );
+}
+
 // ============================================================
 function GymLog() {
   const [page, setPage] = useState("home"); // "home" | "suggestion"
@@ -263,6 +312,7 @@ function GymLog() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [openPast, setOpenPast] = useState(null);
   const [likersOpen, setLikersOpen] = useState(null); // ホバー/タップ中の投稿id
+  const [playing, setPlaying] = useState(null); // インライン再生中: "preview" | フィード投稿id
 
   // 動画
   const [videoUrl, setVideoUrl] = useState("");
@@ -303,6 +353,27 @@ function GymLog() {
       setLoaded(true);
     })();
   }, []);
+
+  // タイムラインを60秒ごとに自動更新(仲間のナイスファイト!や投稿を取り込む)
+  useEffect(() => {
+    if (!loaded) return;
+    const iv = setInterval(async () => {
+      try { setFeedData(await loadFeed(feedMode)); } catch (e) { /* ignore */ }
+    }, 60000);
+    return () => clearInterval(iv);
+  }, [loaded, feedMode]);
+
+  // タイムラインの自動同期(30秒ごとに静かに取得・マージ)
+  useEffect(() => {
+    if (!loaded || feedMode === "local") return;
+    const iv = setInterval(async () => {
+      try {
+        const d = await loadFeed(feedMode);
+        setFeedData((prev) => ({ items: mergeFeed(prev.items, d.items) }));
+      } catch (e) { /* offline等は無視 */ }
+    }, 30000);
+    return () => clearInterval(iv);
+  }, [loaded, feedMode]);
 
   // Supabaseモードでは名前変更時にその人のメモを読み直す
   useEffect(() => {
@@ -350,10 +421,13 @@ function GymLog() {
   };
 
   const like = async (id) => {
+    const target = feedData.items.find((s) => s.id === id);
+    if (target && target.likes.includes(user)) { flash("ナイスファイト済みです🥊"); return; }
     const items = feedData.items.map((s) =>
-      s.id === id ? { ...s, likes: s.likes.includes(user) ? s.likes.filter((x) => x !== user) : [...s.likes, user] } : s
+      s.id === id ? { ...s, likes: [...new Set([...s.likes, user])] } : s
     );
-    try { setFeedData(await saveFeed(feedMode, { items })); } catch (e) {}
+    // saveFeedがクラウド上の最新データと結合して保存するため、全員の画面で同期される
+    try { setFeedData(await saveFeed(feedMode, { items })); } catch (e) { flash("同期に失敗しました。通信を確認してください"); }
   };
 
   const refreshFeed = async () => {
@@ -717,23 +791,13 @@ function GymLog() {
                     <span style={{ display: "inline-block", border: `1px solid ${C.deep}`, borderRadius: 999, padding: "1px 10px", margin: "0 3px", fontSize: 12 }}>{fmtCat(s.category)}</span>
                     を記録しました！
                   </div>
-                  {s.video && s.video.url && ytId(s.video.url) ? (
-                    <button onClick={() => window.open(s.video.url, "_blank")} aria-label="練習動画をYouTubeで見る" style={{
-                      display: "block", width: "100%", maxWidth: 260, position: "relative",
-                      border: `1px solid ${C.blue}`, borderRadius: 10, overflow: "hidden",
-                      padding: 0, marginTop: 8, cursor: "pointer", background: "#000",
-                    }}>
-                      <img src={`https://img.youtube.com/vi/${ytId(s.video.url)}/mqdefault.jpg`} alt="練習動画"
-                        style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover", opacity: 0.85 }}/>
-                      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        <span style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(5,7,13,0.75)", border: `2px solid ${C.cyan}`, display: "flex", alignItems: "center", justifyContent: "center", color: C.cyan, fontSize: 15 }}>▶</span>
-                      </span>
-                    </button>
-                  ) : s.video && s.video.url ? (
-                    <button onClick={() => window.open(s.video.url, "_blank")}
-                      style={{ marginTop: 8, fontSize: 12, fontWeight: 700, fontFamily: "inherit", border: `1px solid ${C.blue}`, borderRadius: 8, background: "rgba(46,168,255,0.1)", color: C.cyan, padding: "7px 12px", cursor: "pointer" }}>
-                      ▶ 練習動画を見る
-                    </button>
+                  {s.video && s.video.url ? (
+                    ytId(s.video.url)
+                      ? <YTCard url={s.video.url} maxWidth={260}/>
+                      : <button onClick={() => window.open(s.video.url, "_blank")}
+                          style={{ marginTop: 8, fontSize: 12, fontWeight: 700, fontFamily: "inherit", border: `1px solid ${C.blue}`, borderRadius: 8, background: "rgba(46,168,255,0.1)", color: C.cyan, padding: "7px 12px", cursor: "pointer" }}>
+                          ▶ 練習動画を見る
+                        </button>
                   ) : null}
                   <div style={{ marginTop: 8, position: "relative", display: "flex", alignItems: "center", gap: 8 }}>
                     <button onClick={() => like(s.id)} style={{
@@ -800,27 +864,9 @@ function GymLog() {
               placeholder="コピーしたYouTubeのURLを貼り付け" style={{ ...input, marginBottom: 10 }}/>
 
             {ytId(videoUrl) && (
-              <button onClick={() => window.open(videoUrl.trim(), "_blank")} aria-label="動画をYouTubeで見る" style={{
-                display: "block", width: "100%", position: "relative", border: `1px solid ${C.blue}`,
-                borderRadius: 12, overflow: "hidden", padding: 0, marginBottom: 10, cursor: "pointer",
-                background: "#000", boxShadow: "0 0 16px rgba(46,168,255,0.25)",
-              }}>
-                <img src={`https://img.youtube.com/vi/${ytId(videoUrl)}/hqdefault.jpg`} alt="動画プレビュー"
-                  style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover", opacity: 0.85 }}/>
-                <span style={{
-                  position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                }}>
-                  <span style={{
-                    width: 58, height: 58, borderRadius: "50%", background: "rgba(5,7,13,0.75)",
-                    border: `2px solid ${C.cyan}`, display: "flex", alignItems: "center", justifyContent: "center",
-                    color: C.cyan, fontSize: 22, boxShadow: "0 0 20px rgba(95,217,255,0.5)",
-                  }}>▶</span>
-                </span>
-                <span style={{
-                  position: "absolute", bottom: 6, right: 8, fontFamily: "'Share Tech Mono', monospace",
-                  fontSize: 10, color: C.cyan, background: "rgba(5,7,13,0.7)", padding: "2px 8px", borderRadius: 6,
-                }}>TAP TO WATCH</span>
-              </button>
+              <div style={{ marginBottom: 10 }}>
+                <YTCard url={videoUrl.trim()} maxWidth="100%"/>
+              </div>
             )}
 
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
@@ -845,18 +891,12 @@ function GymLog() {
             <div style={{ marginTop: 12 }}>
               <div style={{ fontSize: 12, color: C.mut, marginBottom: 8 }}>非公開の保存動画（自分だけ）</div>
               {(me.videos || []).map((v) => (
-                <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                  <button onClick={() => window.open(v.url, "_blank")} style={{
-                    border: `1px solid ${C.line}`, borderRadius: 8, overflow: "hidden", padding: 0,
-                    cursor: "pointer", background: "#000", width: 96, flexShrink: 0,
-                  }}>
-                    <img src={`https://img.youtube.com/vi/${ytId(v.url)}/mqdefault.jpg`} alt=""
-                      style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover" }}/>
-                  </button>
-                  <div style={{ flex: 1, minWidth: 0 }}>
+                <div key={v.id} style={{ marginBottom: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <div style={{ fontSize: 11, color: C.mut }}>{fmtDay(v.ts)} {fmtTime(v.ts)}</div>
+                    <button onClick={() => deleteVideo(v.id)} style={ghostBtn}>削除</button>
                   </div>
-                  <button onClick={() => deleteVideo(v.id)} style={ghostBtn}>削除</button>
+                  <YTCard url={v.url} maxWidth={260}/>
                 </div>
               ))}
             </div>
@@ -981,6 +1021,20 @@ function GymLog() {
         }}>📮アプリの感想大募集＼(^o^)／</button>
       </main>
     </Shell>
+  );
+}
+
+function InlinePlayer({ vid }) {
+  return (
+    <div style={{ position: "relative", width: "100%", aspectRatio: "16/9", borderRadius: 10, overflow: "hidden", border: "1px solid #2EA8FF", background: "#000", boxShadow: "0 0 16px rgba(46,168,255,0.3)" }}>
+      <iframe
+        src={`https://www.youtube-nocookie.com/embed/${vid}?playsinline=1&autoplay=1&rel=0`}
+        title="練習動画"
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
+        allow="autoplay; encrypted-media; picture-in-picture"
+        allowFullScreen
+      />
+    </div>
   );
 }
 
