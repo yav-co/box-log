@@ -22,7 +22,7 @@
 <body>
 <div id="root"><div id="loading">LOADING SYSTEM...</div></div>
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 
 // ============================================================
@@ -154,8 +154,13 @@ function mergeFeed(a, b) {
   const map = new Map();
   [...a, ...b].forEach((s) => {
     const prev = map.get(s.id);
-    if (!prev) map.set(s.id, { ...s, likes: [...new Set(s.likes || [])] });
-    else map.set(s.id, { ...prev, ...s, likes: [...new Set([...(prev.likes||[]), ...(s.likes||[])])] });
+    const mc = (a = [], b = []) => {
+      const m = new Map();
+      [...a, ...b].forEach((c) => m.set(c.id, c));
+      return [...m.values()].sort((x, y) => (x.ts < y.ts ? -1 : 1));
+    };
+    if (!prev) map.set(s.id, { ...s, likes: [...new Set(s.likes || [])], comments: s.comments || [] });
+    else map.set(s.id, { ...prev, ...s, deleted: !!(prev.deleted || s.deleted), likes: [...new Set([...(prev.likes||[]), ...(s.likes||[])])], comments: mc(prev.comments, s.comments) });
   });
   return [...map.values()].sort((x, y) => (x.ts < y.ts ? 1 : -1)).slice(0, 200);
 }
@@ -208,20 +213,21 @@ async function fbSave(fmode, payload) {
 }
 
 // ---------- 小物 ----------
-function CountUp({ value }) {
+function CountUp({ value, decimals = 1 }) {
   const [disp, setDisp] = useState(0);
   const raf = useRef(null);
   useEffect(() => {
     const start = performance.now(); const from = disp, to = value, dur = 700;
     const tick = (now) => {
       const t = Math.min(1, (now - start) / dur);
-      setDisp(Math.round(from + (to - from) * (1 - Math.pow(1 - t, 3))));
+      setDisp(from + (to - from) * (1 - Math.pow(1 - t, 3)));
       if (t < 1) raf.current = requestAnimationFrame(tick);
     };
     raf.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf.current);
   }, [value]); // eslint-disable-line
-  return <span>{disp}</span>;
+  const rounded = Math.round(disp * 10) / 10;
+  return <span>{Number.isInteger(rounded) ? rounded : rounded.toFixed(decimals)}</span>;
 }
 
 function Circuit({ style }) {
@@ -247,11 +253,116 @@ function GloveMark() {
   );
 }
 
+// ---------- テキスト解析(簡易NLP): キーワード辞書・感情辞書 ----------
+const KEYWORDS = ["スタミナ", "ガード", "ジャブ", "フォーム", "力み", "ディフェンス", "ステップ", "疲労", "距離", "前蹴り", "ハイキック", "ローキック", "重心", "呼吸", "スピード", "タイミング", "バランス", "反応", "コンビネーション", "手数", "パンチ", "テイクダウン", "スイープ", "パスガード"];
+const KW_ADVICE = {
+  "ガード": "打たれた直後の1秒、手を顔に戻す癖付けから。シャドーの全パンチに「戻し」を付けてみましょう。",
+  "力み": "力みは呼吸から。コンビの最後に息を吐き切る練習を1日10本、それだけで変わります。",
+  "スタミナ": "息が上がる原因は技術のロスにもあります。ラン量より「脱力したまま動く時間」を増やすのが近道です。",
+  "距離": "距離感は最大の武器。次の練習は「自分の間合いに入られたら即リセット」だけを採点基準にしてみましょう。",
+  "フォーム": "フォームは動画が最強の教材です。1本だけ撮って、理想との差を1つに絞って修正しましょう。",
+  "疲労": "疲労のメモが増えています。強度を1段落として「質の日」を作るのも強くなる練習です。",
+  "ステップ": "ステップは方向より「最初の一歩の速さ」。縄跳びやアジリティを5分足すと体感が変わります。",
+  "重心": "重心の意識は超良い着眼点。壁ドリル(壁を背に低く構えて動く)で低さを体に覚えさせましょう。",
+  "呼吸": "呼吸を意識できているのは上級者の入口。攻防の切れ目で吐く癖を固定しましょう。",
+};
+const KW_ADVICE_DEFAULT = "この課題を来週は「回数」や「成功率」で測ってみましょう。数値化すると定着が一気に速くなります。";
+const POS_WORDS = ["良い", "良かった", "よかった", "できた", "出来た", "動けた", "快調", "掴んだ", "つかんだ", "向上", "当たった", "当てられた", "成功", "伸びた", "楽し", "手応え", "最高", "勝て", "褒められ"];
+const NEG_WORDS = ["ダメ", "だめ", "重い", "重かった", "痛い", "痛め", "動けない", "動けなかった", "スタミナ切れ", "やられた", "課題", "疲れ", "疲労", "ミス", "もらった", "下がりすぎ", "効かされ", "不安", "怖", "きつい", "キツ"];
+
+function entryText(e) {
+  return [e.good, e.reflect, e.next, e.learned, e.focusMemo].filter(Boolean).join(" ");
+}
+function countKeywords(entries) {
+  const map = new Map();
+  entries.forEach((e) => {
+    const t = entryText(e);
+    KEYWORDS.forEach((k) => {
+      const n = t.split(k).length - 1;
+      if (n > 0) map.set(k, (map.get(k) || 0) + n);
+    });
+  });
+  return [...map.entries()].sort((a, b) => b[1] - a[1]);
+}
+function sentimentScore(text) {
+  let s = 0;
+  POS_WORDS.forEach((w) => { s += text.split(w).length - 1; });
+  NEG_WORDS.forEach((w) => { s -= text.split(w).length - 1; });
+  return Math.max(-3, Math.min(3, s));
+}
+function tsToSec(t) { const [m, s] = t.split(":").map(Number); return m * 60 + s; }
+const SLOTS = ["朝", "昼", "夕", "夜"];
+const FIGHT_ORANGE = "#FF7A2F";
+const FIGHT_PHRASES = [
+  "今日も着実に積み上げましょう。",
+  "怪我にだけは気をつけて。体が最大の武器です。",
+  "この努力を必ず実らせましょう。",
+  "やってきたことは裏切りません。",
+  "一番強いのは、準備してきた自分です。",
+  "焦らなくて大丈夫。いつも通りで十分戦えます。",
+  "今日の1時間が、当日の1秒の余裕になります。",
+];
+const SAVE_PHRASES = [
+  "保存しました！今日も積み上げましたね💪",
+  "保存しました！この記録が当日の自信になります。",
+  "保存しました！確実に強くなっています。",
+  "保存しました！良い準備は良い結果を連れてきます。",
+];
+function slotOf(d) {
+  const h = d.getHours();
+  if (h >= 5 && h < 11) return "朝";
+  if (h >= 11 && h < 14) return "昼";
+  if (h >= 14 && h < 18) return "夕";
+  return "夜";
+}
+
 // YouTubeインライン再生カード(タップでその場再生・全画面に飛ばない)
-function YTCard({ url, maxWidth = 260 }) {
+function YTCard({ url, note, comments, onAddComment, maxWidth = 260 }) {
   const [playing, setPlaying] = useState(false);
+  const [startSec, setStartSec] = useState(0);
+  const [cmt, setCmt] = useState("");
   const id = ytId(url);
   if (!id) return null;
+
+  const seek = (sec) => { setStartSec(sec); setPlaying(true); };
+
+  // テキスト内の「分:秒」を再生ジャンプボタンに変換して描画
+  const stamped = (text) => String(text).split(/(\d{1,2}:\d{2})/g).map((p, i) =>
+    /^\d{1,2}:\d{2}$/.test(p) ? (
+      <button key={i} onClick={() => seek(tsToSec(p))} style={{
+        fontFamily: "'Share Tech Mono', monospace", fontSize: 11, fontWeight: 700,
+        border: `1px solid ${C.blue}`, borderRadius: 6, background: "rgba(46,168,255,0.12)",
+        color: C.cyan, padding: "1px 8px", margin: "0 2px", cursor: "pointer",
+      }}>▶ {p}</button>
+    ) : (
+      <span key={i}>{p}</span>
+    )
+  );
+
+  const noteView = (note || "").trim() ? (
+    <div style={{ fontSize: 12, color: C.mut, lineHeight: 2, marginTop: 6, whiteSpace: "pre-wrap" }}>{stamped(note)}</div>
+  ) : null;
+
+  const commentsView = (comments || onAddComment) ? (
+    <div style={{ marginTop: 8 }}>
+      {(comments || []).map((c) => (
+        <div key={c.id} style={{ fontSize: 12, lineHeight: 1.9, marginBottom: 4, whiteSpace: "pre-wrap" }}>
+          <b style={{ color: C.cyan }}>{c.user}</b><span style={{ color: "#C6D4E8" }}>: {stamped(c.text)}</span>
+        </div>
+      ))}
+      {onAddComment && (
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <input value={cmt} onChange={(e) => setCmt(e.target.value)}
+            placeholder="コメント(例: 01:15 のガード良い！)"
+            style={{ flex: 1, background: "#0A101E", border: `1px solid ${C.line}`, borderRadius: 8, color: C.text, fontSize: 12, padding: "8px 10px", fontFamily: "inherit", minWidth: 0 }}/>
+          <button onClick={() => { if (cmt.trim()) { onAddComment(cmt.trim()); setCmt(""); } }}
+            disabled={!cmt.trim()}
+            style={{ fontSize: 12, fontWeight: 700, fontFamily: "inherit", border: `1px solid ${C.blue}`, borderRadius: 8, background: "rgba(46,168,255,0.1)", color: cmt.trim() ? C.cyan : C.mut, padding: "0 14px", cursor: "pointer" }}>送信</button>
+        </div>
+      )}
+    </div>
+  ) : null;
+
   if (playing) {
     return (
       <div style={{ maxWidth, width: "100%", marginTop: 8 }}>
@@ -261,32 +372,39 @@ function YTCard({ url, maxWidth = 260 }) {
           background: "#000", boxShadow: "0 0 16px rgba(46,168,255,0.25)",
         }}>
           <iframe
-            src={`https://www.youtube.com/embed/${id}?playsinline=1&autoplay=1&rel=0`}
+            key={`${id}-${startSec}`}
+            src={`https://www.youtube.com/embed/${id}?playsinline=1&autoplay=1&rel=0&start=${startSec}`}
             title="練習動画"
             allow="autoplay; encrypted-media; picture-in-picture"
             allowFullScreen
             style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0 }}
           />
         </div>
+        {noteView}
+        {commentsView}
         <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
           <button onClick={() => window.open(url, "_blank")} style={{ fontSize: 11, color: C.mut, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>YouTubeで開く</button>
-          <button onClick={() => setPlaying(false)} style={{ fontSize: 11, color: C.mut, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>閉じる</button>
+          <button onClick={() => { setPlaying(false); setStartSec(0); }} style={{ fontSize: 11, color: C.mut, background: "none", border: "none", cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>閉じる</button>
         </div>
       </div>
     );
   }
   return (
-    <button onClick={() => setPlaying(true)} aria-label="動画をこの場で再生" style={{
-      display: "block", width: "100%", maxWidth, position: "relative",
-      border: `1px solid ${C.blue}`, borderRadius: 10, overflow: "hidden",
-      padding: 0, marginTop: 8, cursor: "pointer", background: "#000",
-    }}>
-      <img src={`https://img.youtube.com/vi/${id}/mqdefault.jpg`} alt="練習動画"
-        style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover", opacity: 0.85 }}/>
-      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(5,7,13,0.75)", border: `2px solid ${C.cyan}`, display: "flex", alignItems: "center", justifyContent: "center", color: C.cyan, fontSize: 16 }}>▶</span>
-      </span>
-    </button>
+    <div style={{ maxWidth, width: "100%" }}>
+      <button onClick={() => setPlaying(true)} aria-label="動画をこの場で再生" style={{
+        display: "block", width: "100%", position: "relative",
+        border: `1px solid ${C.blue}`, borderRadius: 10, overflow: "hidden",
+        padding: 0, marginTop: 8, cursor: "pointer", background: "#000",
+      }}>
+        <img src={`https://img.youtube.com/vi/${id}/mqdefault.jpg`} alt="練習動画"
+          style={{ width: "100%", display: "block", aspectRatio: "16/9", objectFit: "cover", opacity: 0.85 }}/>
+        <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ width: 44, height: 44, borderRadius: "50%", background: "rgba(5,7,13,0.75)", border: `2px solid ${C.cyan}`, display: "flex", alignItems: "center", justifyContent: "center", color: C.cyan, fontSize: 16 }}>▶</span>
+        </span>
+      </button>
+      {noteView}
+      {commentsView}
+    </div>
   );
 }
 
@@ -304,7 +422,8 @@ function GymLog() {
 
   // メモフォーム
   const now = new Date();
-  const [time, setTime] = useState(`${pad(now.getHours())}:${pad(now.getMinutes())}`);
+  const [slot, setSlot] = useState(slotOf(now)); // 時間帯(朝/昼/夕/夜)を現在時刻から自動セット
+  const [hours, setHours] = useState("");        // 練習時間(h)
   const [disc, setDisc] = useState(DISCIPLINES[0]);
   const [cat, setCat] = useState(BASE_CATS[0]);
   const [freeCat, setFreeCat] = useState("");
@@ -312,11 +431,19 @@ function GymLog() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [openPast, setOpenPast] = useState(null);
   const [likersOpen, setLikersOpen] = useState(null); // ホバー/タップ中の投稿id
+  const [editingId, setEditingId] = useState(null);   // 編集中のメモid
+  const [delConfirm, setDelConfirm] = useState(null); // タイムライン削除の確認中id
   const [playing, setPlaying] = useState(null); // インライン再生中: "preview" | フィード投稿id
 
   // 動画
   const [videoUrl, setVideoUrl] = useState("");
   const [privacy, setPrivacy] = useState("unlisted");
+  const [editVidNote, setEditVidNote] = useState(null); // {id, text} メモ編集中の保存動画
+  const [commentOpen, setCommentOpen] = useState(null); // コメント欄を開いている投稿id
+  const [fightOpen, setFightOpen] = useState(false);    // 試合設定ポップアップ
+  const [fightDateDraft, setFightDateDraft] = useState("");
+  const [fightThemeDraft, setFightThemeDraft] = useState("");
+  const [summaryTab, setSummaryTab] = useState("week"); // AIサマリー: "week" | "month"
 
   // ダッシュボード期間選択
   const [period, setPeriod] = useState("week"); // "week" | "month" | "year"
@@ -363,6 +490,18 @@ function GymLog() {
     return () => clearInterval(iv);
   }, [loaded, feedMode]);
 
+  // 削除確認中に他の場所をタップしたら「削除」表示に戻す
+  useEffect(() => {
+    if (!delConfirm) return;
+    const reset = () => setDelConfirm(null);
+    document.addEventListener("click", reset);
+    document.addEventListener("touchstart", reset);
+    return () => {
+      document.removeEventListener("click", reset);
+      document.removeEventListener("touchstart", reset);
+    };
+  }, [delConfirm]);
+
   // タイムラインの自動同期(30秒ごとに静かに取得・マージ)
   useEffect(() => {
     if (!loaded || feedMode === "local") return;
@@ -395,29 +534,88 @@ function GymLog() {
 
   const saveEntry = async (video = null) => {
     const category = cat === "__free__" ? (freeCat.trim() || "その他") : cat;
-    const [h, mi] = time.split(":").map(Number);
-    const ts = new Date(); ts.setHours(h ?? 0, mi ?? 0, 0, 0);
-    const entry = { id: uid(), ts: ts.toISOString(), discipline: disc, category, ...draft };
     // 自由回答カテゴリは次回以降の選択肢に追加
     let nextCustom = customCats;
     if (cat === "__free__" && category !== "その他" && !BASE_CATS.includes(category) && !customCats.includes(category)) {
       nextCustom = [...customCats, category];
     }
-    const nextMe = { ...me, entries: [entry, ...me.entries], customCats: nextCustom };
+
+    let entry, nextMe, item;
+    // 同日・同時間帯・同種目/カテゴリの記録に自動で番号を振る(朝, 朝2, 朝3...)
+    const makeSlotLabel = (refTs, excludeId) => {
+      const n = me.entries.filter((e) =>
+        e.id !== excludeId &&
+        dayKey(e.ts) === dayKey(refTs) &&
+        (e.slotBase || e.slot || "") === slot &&
+        (e.discipline || "") === disc &&
+        (e.category || "") === category
+      ).length;
+      return n === 0 ? slot : `${slot}${n + 1}`;
+    };
+    const hoursVal = hours !== "" && !isNaN(Number(hours)) ? Number(hours) : null;
+
+    if (editingId) {
+      // ---- 既存メモの更新(日付・投稿時刻は元のまま) ----
+      const orig = me.entries.find((e) => e.id === editingId);
+      if (!orig) { setEditingId(null); return; }
+      const slotLabel = makeSlotLabel(orig.ts, editingId);
+      entry = { ...orig, discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, ...draft };
+      nextMe = { ...me, entries: me.entries.map((e) => (e.id === editingId ? entry : e)), customCats: nextCustom };
+      // フィード側も同idのメタ情報を更新(videoキーは持たせず既存を維持、likesはマージで保持)
+      item = { id: editingId, user, ts: entry.ts, category: `${disc}(${category})`, slot: slotLabel, likes: [] };
+    } else {
+      // ---- 新規メモ(投稿時刻は現在時刻) ----
+      const ts = new Date();
+      const slotLabel = makeSlotLabel(ts.toISOString(), null);
+      entry = { id: uid(), ts: ts.toISOString(), discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, ...draft };
+      nextMe = { ...me, entries: [entry, ...me.entries], customCats: nextCustom };
+      item = { id: entry.id, user, ts: entry.ts, category: `${disc}(${category})`, slot: slotLabel, likes: [], comments: [], video: video && video.privacy === "unlisted" ? video : null };
+    }
+
     setMe(nextMe);
     if (cat === "__free__") { setCat(category !== "その他" ? category : BASE_CATS[0]); setFreeCat(""); }
     try { await saveMe(meMode, user, nextMe); } catch (e) { flash("メモの保存に失敗しました"); return; }
-    // フィードにはメタ情報のみ共有（メモ本文は載せない）
-    const item = { id: entry.id, user, ts: entry.ts, category: `${disc}(${category})`, likes: [], video: video && video.privacy === "unlisted" ? video : null };
     try { setFeedData(await saveFeed(feedMode, { items: mergeFeed(feedData.items, [item]) })); } catch (e) { /* feed失敗はメモに影響なし */ }
     setDraft({ good: "", reflect: "", next: "", learned: "", focusMemo: "" });
+    setEditingId(null);
+    setSlot(slotOf(new Date()));
+    setHours("");
+    if (fightMode) flash(SAVE_PHRASES[Math.floor(Math.random() * SAVE_PHRASES.length)]);
     setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1800);
+  };
+
+  // 過去メモを編集フォームに読み込む
+  const startEdit = (e) => {
+    setEditingId(e.id);
+    setSlot(e.slotBase || (e.slot ? e.slot.replace(/\d+$/, "") : slotOf(new Date(e.ts))));
+    setHours(e.hours != null ? String(e.hours) : "");
+    setDisc(e.discipline || DISCIPLINES[0]);
+    if ([...BASE_CATS, ...customCats].includes(e.category)) { setCat(e.category); setFreeCat(""); }
+    else { setCat("__free__"); setFreeCat(e.category || ""); }
+    setDraft({ good: e.good || "", reflect: e.reflect || "", next: e.next || "", learned: e.learned || "", focusMemo: e.focusMemo || "" });
+    setOpenPast(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraft({ good: "", reflect: "", next: "", learned: "", focusMemo: "" });
+  };
+
+  // タイムラインから削除(自分の投稿のみ・墓標方式で全端末に反映)
+  const deleteFeedItem = async (id) => {
+    const items = feedData.items.map((s) => (s.id === id ? { ...s, deleted: true } : s));
+    setDelConfirm(null);
+    try { setFeedData(await saveFeed(feedMode, { items })); flash("タイムラインから削除しました"); } catch (e) { flash("削除に失敗しました"); }
   };
 
   const deleteEntry = async (id) => {
     const nextMe = { ...me, entries: me.entries.filter((e) => e.id !== id), customCats };
     setMe(nextMe); setOpenPast(null);
+    if (editingId === id) cancelEdit();
     try { await saveMe(meMode, user, nextMe); } catch (e) {}
+    // タイムライン側の同じ投稿も削除
+    const items = feedData.items.map((s) => (s.id === id ? { ...s, deleted: true } : s));
+    try { setFeedData(await saveFeed(feedMode, { items })); } catch (e) {}
   };
 
   const like = async (id) => {
@@ -435,22 +633,68 @@ function GymLog() {
     flash("タイムラインを更新しました");
   };
 
+  // ---- 試合モード ----
+  const fight = me.fight || null;
+  const fightDays = (() => {
+    if (!fight || !fight.date) return null;
+    const t = new Date(); t.setHours(0, 0, 0, 0);
+    return Math.round((new Date(`${fight.date}T00:00:00`) - t) / 86400000);
+  })();
+  const fightMode = fightDays !== null && fightDays >= 0;
+  const dayIdx = Math.floor(Date.now() / 86400000);
+  const fightPhrase = FIGHT_PHRASES[dayIdx % FIGHT_PHRASES.length];
+
+  const openFight = () => {
+    setFightDateDraft(fight ? fight.date : "");
+    setFightThemeDraft(fight ? fight.theme || "" : "");
+    setFightOpen(true);
+  };
+  const saveFight = async () => {
+    if (!fightDateDraft) { flash("試合の日付を入力してください"); return; }
+    const nextMe = { ...me, fight: { date: fightDateDraft, theme: fightThemeDraft.trim() } };
+    setMe(nextMe);
+    setFightOpen(false);
+    try { await saveMe(meMode, user, nextMe); flash("試合モードON！ここから仕上げていきましょう🔥"); } catch (e) { flash("保存に失敗しました"); }
+  };
+  const deleteFight = async () => {
+    const nextMe = { ...me, fight: null };
+    setMe(nextMe);
+    setFightOpen(false);
+    try { await saveMe(meMode, user, nextMe); flash("試合設定を削除しました。お疲れさまでした"); } catch (e) {}
+  };
+
   const saveVideo = async () => {
     const url = videoUrl.trim();
     if (!ytId(url)) { flash("YouTubeのURLを確認してください"); return; }
-    if (privacy === "unlisted") {
-      // 限定公開: タイムラインへ共有
-      const item = { id: uid(), user, ts: new Date().toISOString(), category: "練習動画", likes: [], video: { privacy, url } };
+    const shared = privacy === "unlisted";
+    const vid = { id: uid(), ts: new Date().toISOString(), url, note: "", shared };
+    // 共有・非公開いずれの場合も「保存動画」へ保存(メモは自分だけに表示)
+    const nextMe = { ...me, customCats, videos: [vid, ...(me.videos || [])] };
+    setMe(nextMe);
+    try { await saveMe(meMode, user, nextMe); } catch (e) { flash("保存に失敗しました"); return; }
+    if (shared) {
+      // 限定公開: タイムラインへ共有(メモは共有されない・コメントは公開)
+      const item = { id: vid.id, user, ts: vid.ts, category: "練習動画", likes: [], comments: [], video: { privacy, url } };
       try { setFeedData(await saveFeed(feedMode, { items: mergeFeed(feedData.items, [item]) })); } catch (e) {}
-      flash("タイムラインに動画を共有しました");
+      flash("正常に保存されました！(タイムラインに共有)");
     } else {
-      // 非公開: 自分のデータにのみ保存
-      const nextMe = { ...me, entries: me.entries, customCats, videos: [{ id: uid(), ts: new Date().toISOString(), url }, ...(me.videos || [])] };
-      setMe(nextMe);
-      try { await saveMe(meMode, user, nextMe); } catch (e) { flash("保存に失敗しました"); return; }
-      flash("非公開で保存しました（自分だけ）");
+      flash("正常に保存されました！");
     }
     setVideoUrl("");
+  };
+
+  // 保存動画のメモを更新(自分だけに表示)
+  const saveVideoNote = async (id, note) => {
+    const nextMe = { ...me, videos: (me.videos || []).map((v) => (v.id === id ? { ...v, note } : v)) };
+    setMe(nextMe);
+    try { await saveMe(meMode, user, nextMe); } catch (e) { flash("メモの保存に失敗しました"); }
+  };
+
+  // タイムラインの動画投稿にコメント(仲間に公開)
+  const addComment = async (id, text) => {
+    const comment = { id: uid(), user, ts: new Date().toISOString(), text };
+    const items = feedData.items.map((s) => (s.id === id ? { ...s, comments: [...(s.comments || []), comment] } : s));
+    try { setFeedData(await saveFeed(feedMode, { items })); } catch (e) { flash("コメントの送信に失敗しました"); }
   };
 
   const deleteVideo = async (id) => {
@@ -488,10 +732,11 @@ function GymLog() {
     d.setHours(0, 0, 0, 0);
     return d;
   };
-  const countIn = (p) => me.entries.filter((s) => new Date(s.ts) >= periodStart(p)).length;
-  const weekCount = countIn("week");
-  const monthCount = countIn("month");
-  const yearCount = countIn("year");
+  const hoursIn = (p) => me.entries.filter((s) => new Date(s.ts) >= periodStart(p))
+    .reduce((sum, s) => sum + (typeof s.hours === "number" ? s.hours : 0), 0);
+  const weekCount = hoursIn("week");
+  const monthCount = hoursIn("month");
+  const yearCount = hoursIn("year");
   const PERIOD_LABEL = { week: "今週", month: "今月", year: "今年" };
   // 選択中の期間について「種目 × カテゴリ」のマトリクスを集計(ヒートマップ用)
   const heat = (() => {
@@ -537,6 +782,60 @@ function GymLog() {
     return { tag: "PERFECT BALANCE", text: "完璧なワークアウトバランスです！全てのメニューが網羅されており、理想的な成長曲線を描いています。この調子でコンディションを維持してください。" };
   })();
 
+  // ---- AIサマリーノート: キーワード解析 + 悪癖ループ検知 (メモ更新のたびに自動再計算) ----
+  const noteAnalysis = useMemo(() => {
+    const now = Date.now();
+    const within = (e, fromDays, toDays = 0) => {
+      const age = (now - new Date(e.ts).getTime()) / 86400000;
+      return age >= toDays && age < fromDays;
+    };
+    const hasText = (e) => entryText(e).trim().length > 0;
+    const weekEntries = me.entries.filter((e) => within(e, 7) && hasText(e));
+    const monthEntries = me.entries.filter((e) => within(e, 30) && hasText(e));
+    const oldEntries = me.entries.filter((e) => within(e, 90, 30) && hasText(e));
+
+    const build = (entries, label) => {
+      if (entries.length < 2) {
+        return { insufficient: true, text: `まだ${label}のメモが十分にありません。日々の気づきをメモすることでAI分析が始まります。`, top: [] };
+      }
+      const top = countKeywords(entries).slice(0, 3);
+      if (top.length === 0) {
+        return { insufficient: false, top, text: `${label}は${entries.length}件のメモを記録。自由な言葉での言語化ができています。キーワード(ガード、距離、力み等)を含めると、さらに深い分析ができます。` };
+      }
+      const kws = top.map(([k]) => `「${k}」`).join("");
+      const advice = KW_ADVICE[top[0][0]] || KW_ADVICE_DEFAULT;
+      return { insufficient: false, top, text: `${label}は${entries.length}件のメモの中で、${kws}への意識が集中しています。${advice}` };
+    };
+
+    // 悪癖ループ: 直近1週間 × 1〜3ヶ月前の共通キーワード
+    const recentK = new Set(countKeywords(weekEntries).map(([k]) => k));
+    const oldK = new Set(countKeywords(oldEntries).map(([k]) => k));
+    const loop = [...recentK].filter((k) => oldK.has(k));
+
+    return { week: build(weekEntries, "この1週間"), month: build(monthEntries, "この1ヶ月"), loop };
+  }, [me.entries]);
+
+  // ---- EXPERIMENTAL: 感情スコアの推移(直近10セッション) ----
+  const mood = useMemo(() => {
+    const withText = me.entries.filter((e) => entryText(e).trim().length > 0)
+      .sort((a, b) => (a.ts > b.ts ? 1 : -1)).slice(-10);
+    const points = withText.map((e) => {
+      const d = new Date(e.ts);
+      return { label: `${d.getMonth() + 1}/${d.getDate()}`, score: sentimentScore(entryText(e)) };
+    });
+    let advice;
+    if (points.length < 2) {
+      advice = "メモが増えると、ここに感情の波が見えるようになります。";
+    } else {
+      const recent = points.slice(-3);
+      const avg = recent.reduce((a, p) => a + p.score, 0) / recent.length;
+      if (avg >= 0.7) advice = "波が上向きです！好調な時こそ基本の反復を。この勢いのまま積み上げましょう🔥";
+      else if (avg <= -0.7) advice = "ネガティブな言葉が続いています。それは成長痛のサイン。休養を1日入れるか、得意メニューで「小さな成功」を1つ作って流れを変えましょう。";
+      else advice = "浮き沈みは自然なリズムです。良い日も悪い日も淡々と記録できていること自体が、既に強さです。";
+    }
+    return { points, advice };
+  }, [me.entries]);
+
   // 回数→セル色(0: ブランク / 多いほど鮮やかなブルー)
   const heatStyle = (c) => {
     if (!c) return { background: "rgba(255,255,255,0.02)", border: `1px solid ${C.line}`, color: "transparent" };
@@ -550,7 +849,7 @@ function GymLog() {
     };
   };
 
-  const feed = [...feedData.items].sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 60);
+  const feed = feedData.items.filter((s) => !s.deleted).sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 60);
   const feedByDay = {};
   feed.forEach((s) => { const k = dayKey(s.ts); (feedByDay[k] = feedByDay[k] || []).push(s); });
 
@@ -652,10 +951,21 @@ function GymLog() {
                 {user ? `${user} のページ` : "BOX-LOG"}
               </div>
               <div style={{ fontSize: 11, color: C.mut, marginTop: 3 }}>
-                {feedMode === "supabase" ? "Supabase同期: 仲間とリアルタイム共有中" : feedMode === "shared" ? "共有モード: 仲間と同期中(メモの中身は自分だけ)" : "ソロモード: この端末のみ(Supabaseを設定すると仲間と共有できます)"}
+                {feedMode === "supabase" ? "Supabase同期: 仲間とリアルタイム共有中" : feedMode === "shared" ? "共有モード: 仲間と同期中(メモの中身は自分だけ)" : "ソロモード: この端末のみ(共有は公開後に有効)"}
               </div>
             </div>
           </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {user && (
+            <button onClick={openFight} aria-label="試合設定" style={{
+              background: fightMode ? "rgba(255,122,47,0.14)" : "#0A101E",
+              color: fightMode ? FIGHT_ORANGE : C.mut,
+              border: `1px solid ${fightMode ? FIGHT_ORANGE : C.line}`,
+              borderRadius: 10, padding: "9px 12px", fontSize: 12, fontWeight: 700,
+              fontFamily: "inherit", cursor: "pointer",
+              boxShadow: fightMode ? "0 0 12px rgba(255,122,47,0.35)" : "none",
+            }}>{fightMode ? `🔥試合まで${fightDays === 0 ? "本日" : `あと${fightDays}日`}` : "試合"}</button>
+          )}
           {user && (
             <button onClick={() => { setNameInput(user); setUser(""); }} aria-label="名前を変更" style={{
               background: "#0A101E", color: C.mut, border: `1px solid ${C.line}`,
@@ -663,6 +973,7 @@ function GymLog() {
               fontFamily: "inherit", cursor: "pointer",
             }}>名前変更</button>
           )}
+          </div>
         </div>
         <Circuit style={{ marginTop: 12 }}/>
       </header>
@@ -705,6 +1016,17 @@ function GymLog() {
             <input type="text" value={draft.focusMemo}
               onChange={(e) => setDraft({ ...draft, focusMemo: e.target.value })}
               placeholder="やってみてどうだった？一言メモ" style={input}/>
+            {fightMode && (
+              <div style={{
+                marginTop: 10, borderTop: "1px dashed rgba(255,122,47,0.4)", paddingTop: 10,
+                fontSize: 13, lineHeight: 1.8,
+              }}>
+                <span style={{ color: FIGHT_ORANGE, fontWeight: 700 }}>
+                  {fight.theme ? `「${fight.theme}」の試合まで` : "試合まで"}{fightDays === 0 ? "、いよいよ本日です。" : `あと${fightDays}日です。`}
+                </span>
+                <span style={{ color: C.text }}> {fightPhrase}</span>
+              </div>
+            )}
           </section>
         ) : (
           <section style={{ ...card, borderStyle: "dashed" }}>
@@ -712,31 +1034,54 @@ function GymLog() {
             <div style={{ fontSize: 12, color: C.mut, lineHeight: 1.8 }}>
               下のメモで「次回の練習で意識すること」を書くと、次からここに表示され、一言メモを残せます。
             </div>
+            {fightMode && (
+              <div style={{
+                marginTop: 10, borderTop: "1px dashed rgba(255,122,47,0.4)", paddingTop: 10,
+                fontSize: 13, lineHeight: 1.8,
+              }}>
+                <span style={{ color: FIGHT_ORANGE, fontWeight: 700 }}>
+                  {fight.theme ? `「${fight.theme}」の試合まで` : "試合まで"}{fightDays === 0 ? "、いよいよ本日です。" : `あと${fightDays}日です。`}
+                </span>
+                <span style={{ color: C.text }}> {fightPhrase}</span>
+              </div>
+            )}
           </section>
         )}
 
         {/* ===== 2. 練習メモ(メイン) ===== */}
-        <section style={card}>
-          <div style={eyebrow}>PRACTICE MEMO — 今日の練習メモ</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-            <div style={{ width: 86, flexShrink: 0 }}>
-              <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>時間</div>
-              <input type="time" value={time} onChange={(e) => setTime(e.target.value)} aria-label="練習時刻"
-                style={{ ...input, padding: "12px 0", textAlign: "center", fontSize: 13,
-                  WebkitAppearance: "none", appearance: "none",
-                  fontFamily: "'Share Tech Mono', monospace" }}/>
+        <section style={{ ...card, ...(editingId ? { borderColor: "#FFB454" } : {}) }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ ...eyebrow, color: editingId ? "#FFB454" : C.cyan }}>
+              {editingId ? "EDIT MODE — 記録を編集中" : "PRACTICE MEMO — 今日の練習メモ"}
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
+            {editingId && (
+              <button onClick={cancelEdit} style={{ ...ghostBtn, marginBottom: 10, borderColor: "#FFB454", color: "#FFB454" }}>編集をやめる</button>
+            )}
+          </div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+            <div style={{ flex: 1.1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>時間帯</div>
+              <select value={slot} onChange={(e) => setSlot(e.target.value)} style={{ ...input, height: 46, padding: "0 6px" }} aria-label="時間帯">
+                {SLOTS.map((s0) => <option key={s0} value={s0}>{s0}</option>)}
+              </select>
+            </div>
+            <div style={{ width: 66, flexShrink: 0 }}>
+              <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>時間h</div>
+              <input type="number" inputMode="decimal" min="0" max="12" step="0.5" value={hours}
+                onChange={(e) => setHours(e.target.value)} placeholder="1.5"
+                style={{ ...input, height: 46, padding: "0 6px", textAlign: "center", fontFamily: "'Share Tech Mono', monospace" }} aria-label="練習時間"/>
+            </div>
+            <div style={{ flex: 1.2, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>種目</div>
-              <select value={disc} onChange={(e) => setDisc(e.target.value)} style={{ ...input, padding: "12px 6px" }} aria-label="種目">
+              <select value={disc} onChange={(e) => setDisc(e.target.value)} style={{ ...input, height: 46, padding: "0 6px" }} aria-label="種目">
                 {DISCIPLINES.map((d0) => <option key={d0} value={d0}>{d0}</option>)}
               </select>
             </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ flex: 1.2, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>カテゴリ</div>
-              <select value={cat} onChange={(e) => setCat(e.target.value)} style={{ ...input, padding: "12px 6px" }} aria-label="カテゴリ">
+              <select value={cat} onChange={(e) => setCat(e.target.value)} style={{ ...input, height: 46, padding: "0 6px" }} aria-label="カテゴリ">
                 {[...BASE_CATS, ...customCats].map((c0) => <option key={c0} value={c0}>{c0}</option>)}
-                <option value="__free__">その他（自由回答）</option>
+                <option value="__free__">その他</option>
               </select>
             </div>
           </div>
@@ -758,7 +1103,7 @@ function GymLog() {
               background: savedFlash ? "#22D07A" : `linear-gradient(90deg, ${C.deep}, ${C.blue})`,
               color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
               boxShadow: "0 0 18px rgba(46,168,255,0.35)", opacity: user ? 1 : 0.5,
-            }}>{savedFlash ? "保存しました ✓" : "保存する"}</button>
+            }}>{savedFlash ? "保存しました ✓" : editingId ? "更新する" : "保存する"}</button>
           <div style={{ fontSize: 11, color: C.mut, marginTop: 8 }}>
             メモの中身は自分だけに保存。仲間には「{user || "あなた"}さんが◯時に練習を記録しました」だけが共有されます
           </div>
@@ -777,6 +1122,7 @@ function GymLog() {
               <div style={{ fontSize: 11, color: C.mut, marginTop: 4 }}>まだ誰も記録していません。最初の1人になりましょう</div>
             </div>
           )}
+          <div style={{ maxHeight: 380, overflowY: "auto", WebkitOverflowScrolling: "touch", paddingRight: 2 }}>
           {Object.keys(feedByDay).sort().reverse().map((k) => (
             <div key={k}>
               <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 12, color: C.mut, margin: "12px 0 6px" }}>— {fmtDay(feedByDay[k][0].ts)} —</div>
@@ -786,14 +1132,17 @@ function GymLog() {
                   background: s.user === user ? "rgba(46,168,255,0.05)" : "#0A101E",
                 }}>
                   <div style={{ fontSize: 14, lineHeight: 1.7 }}>
+                    <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}>{fmtTime(s.ts)} </span>
                     <b style={{ color: C.cyan }}>{s.user}</b>さんが
-                    <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}> {fmtTime(s.ts)} </span>に
-                    <span style={{ display: "inline-block", border: `1px solid ${C.deep}`, borderRadius: 999, padding: "1px 10px", margin: "0 3px", fontSize: 12 }}>{fmtCat(s.category)}</span>
+                    <span style={{ display: "inline-block", border: `1px solid ${C.deep}`, borderRadius: 999, padding: "1px 10px", margin: "0 3px", fontSize: 12 }}>{s.slot ? `${s.slot}の` : ""}{fmtCat(s.category)}</span>
                     を記録しました！
                   </div>
                   {s.video && s.video.url ? (
                     ytId(s.video.url)
-                      ? <YTCard url={s.video.url} maxWidth={260}/>
+                      ? <YTCard url={s.video.url}
+                          comments={commentOpen === s.id ? (s.comments || []) : undefined}
+                          onAddComment={commentOpen === s.id ? (text) => addComment(s.id, text) : undefined}
+                          maxWidth={260}/>
                       : <button onClick={() => window.open(s.video.url, "_blank")}
                           style={{ marginTop: 8, fontSize: 12, fontWeight: 700, fontFamily: "inherit", border: `1px solid ${C.blue}`, borderRadius: 8, background: "rgba(46,168,255,0.1)", color: C.cyan, padding: "7px 12px", cursor: "pointer" }}>
                           ▶ 練習動画を見る
@@ -807,6 +1156,15 @@ function GymLog() {
                       color: s.likes.includes(user) ? C.cyan : C.mut,
                       borderRadius: 999, padding: "6px 14px", cursor: "pointer",
                     }}>🥊 ナイスファイト！</button>
+                    {s.video && s.video.url && ytId(s.video.url) && (
+                      <button onClick={() => setCommentOpen(commentOpen === s.id ? null : s.id)} style={{
+                        fontSize: 12, fontFamily: "inherit", fontWeight: 700,
+                        border: `1px solid ${commentOpen === s.id ? C.cyan : C.line}`,
+                        background: commentOpen === s.id ? "rgba(95,217,255,0.14)" : "none",
+                        color: commentOpen === s.id ? C.cyan : C.mut,
+                        borderRadius: 999, padding: "6px 12px", cursor: "pointer",
+                      }}>💬{(s.comments || []).length > 0 ? ` ${s.comments.length}` : " コメント"}</button>
+                    )}
                     {s.likes.length > 0 && (
                       <span
                         onMouseEnter={() => setLikersOpen(s.id)}
@@ -820,6 +1178,18 @@ function GymLog() {
                           border: `1px solid ${C.line}`, borderRadius: 999, padding: "5px 10px",
                         }}
                       >×{s.likes.length}</span>
+                    )}
+                    {s.user === user && (
+                      <button
+                        onClick={(ev) => { ev.stopPropagation(); delConfirm === s.id ? deleteFeedItem(s.id) : setDelConfirm(s.id); }}
+                        onTouchStart={(ev) => ev.stopPropagation()}
+                        style={{
+                          marginLeft: "auto", fontSize: 11, fontFamily: "inherit",
+                          border: `1px solid ${delConfirm === s.id ? "#FF5A6E" : C.line}`,
+                          background: delConfirm === s.id ? "rgba(255,90,110,0.12)" : "none",
+                          color: delConfirm === s.id ? "#FF5A6E" : C.mut,
+                          borderRadius: 8, padding: "5px 10px", cursor: "pointer",
+                        }}>{delConfirm === s.id ? "本当に削除？" : "削除"}</button>
                     )}
                     {likersOpen === s.id && s.likes.length > 0 && (
                       <div style={{
@@ -836,6 +1206,7 @@ function GymLog() {
               ))}
             </div>
           ))}
+          </div>
         </section>
 
         {/* ===== 4. 動画 ===== */}
@@ -852,7 +1223,7 @@ function GymLog() {
               width: "100%", padding: "13px 0", borderRadius: 12, border: "none", fontFamily: "inherit",
               background: `linear-gradient(90deg, ${C.deep}, ${C.blue})`, color: "#fff",
               fontSize: 15, fontWeight: 700, cursor: "pointer", boxShadow: "0 0 18px rgba(46,168,255,0.35)",
-            }}>▶ アップロードする（YouTubeが開きます）</button>
+            }}>▶ アップロードする<br/><span style={{ fontSize: 11, fontWeight: 400, opacity: 0.85 }}>（YouTubeが開きます）</span></button>
           </div>
 
           {/* Step 2: URL貼り付け + プレビュー */}
@@ -862,7 +1233,6 @@ function GymLog() {
             </div>
             <input value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)}
               placeholder="コピーしたYouTubeのURLを貼り付け" style={{ ...input, marginBottom: 10 }}/>
-
             {ytId(videoUrl) && (
               <div style={{ marginBottom: 10 }}>
                 <YTCard url={videoUrl.trim()} maxWidth="100%"/>
@@ -870,13 +1240,14 @@ function GymLog() {
             )}
 
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              {[["private", "非公開（自分だけ）"], ["unlisted", "限定公開（仲間に共有）"]].map(([v, label]) => (
+              {[["private", "非公開", "（自分だけ）"], ["unlisted", "限定公開", "（仲間に共有）"]].map(([v, label, sub]) => (
                 <button key={v} onClick={() => setPrivacy(v)} style={{
-                  flex: 1, padding: "11px 4px", borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                  flex: 1, padding: "9px 4px", borderRadius: 10, fontSize: 13, fontWeight: 700, fontFamily: "inherit",
+                  lineHeight: 1.5, textAlign: "center",
                   border: `1px solid ${privacy === v ? C.blue : C.line}`,
                   background: privacy === v ? "rgba(46,168,255,0.12)" : "#05070D",
                   color: privacy === v ? C.cyan : C.mut, cursor: "pointer",
-                }}>{label}</button>
+                }}>{label}<br/><span style={{ fontSize: 10, fontWeight: 400, opacity: 0.85 }}>{sub}</span></button>
               ))}
             </div>
             <button onClick={saveVideo} disabled={!ytId(videoUrl)} style={{
@@ -886,26 +1257,57 @@ function GymLog() {
             }}>{privacy === "unlisted" ? "タイムラインに共有する" : "非公開で保存する"}</button>
           </div>
 
-          {/* 非公開で保存した自分の動画 */}
-          {(me.videos || []).length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <div style={{ fontSize: 12, color: C.mut, marginBottom: 8 }}>非公開の保存動画（自分だけ）</div>
-              {(me.videos || []).map((v) => (
-                <div key={v.id} style={{ marginBottom: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ fontSize: 11, color: C.mut }}>{fmtDay(v.ts)} {fmtTime(v.ts)}</div>
-                    <button onClick={() => deleteVideo(v.id)} style={ghostBtn}>削除</button>
-                  </div>
-                  <YTCard url={v.url} maxWidth={260}/>
+          {/* 保存動画: 直近7日間のテキストリンクのみ(タップでMY NOTESの「この日の動画」へ) */}
+          {(() => {
+            const recent = (me.videos || []).filter((v) => (Date.now() - new Date(v.ts).getTime()) / 86400000 < 7);
+            if (recent.length === 0) return null;
+            return (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 12, color: C.mut, marginBottom: 8 }}>保存動画(直近7日間)</div>
+                <div style={{ maxHeight: 132, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+                  {recent.map((v) => {
+                    const dayEntries = me.entries.filter((en) => dayKey(en.ts) === dayKey(v.ts));
+                    const near = dayEntries[0];
+                    const label = near && near.discipline ? `${near.discipline}(${near.category})` : "練習";
+                    return (
+                      <div key={v.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                        <button
+                          onClick={() => {
+                            if (near) {
+                              setOpenPast(near.id);
+                              setTimeout(() => {
+                                const el = document.getElementById(`note-${near.id}`);
+                                if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+                              }, 100);
+                            } else {
+                              window.open(v.url, "_blank");
+                            }
+                          }}
+                          style={{
+                            flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer",
+                            fontSize: 13, color: C.cyan, textDecoration: "underline", fontFamily: "inherit",
+                            padding: "4px 0", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                          }}
+                        >▶ {fmtDay(v.ts)} {fmtTime(v.ts)} {label} の動画</button>
+                        <span style={{
+                          fontSize: 9, fontFamily: "'Share Tech Mono', monospace", flexShrink: 0,
+                          border: `1px solid ${v.shared ? C.deep : C.line}`, borderRadius: 999, padding: "1px 8px",
+                          color: v.shared ? C.cyan : C.mut,
+                        }}>{v.shared ? "共有" : "非公開"}</span>
+                        <button onClick={() => deleteVideo(v.id)} style={{ ...ghostBtn, flexShrink: 0, padding: "3px 10px" }}>削除</button>
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </section>
 
         {/* ===== 5. 自分の過去メモ ===== */}
         <section style={card}>
           <div style={eyebrow}>MY NOTES — これまでの記録</div>
+
           {me.entries.length === 0 && (
             <div style={{ textAlign: "center", padding: "18px 8px", border: `1px dashed ${C.line}`, borderRadius: 12 }}>
               <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue }}>NO DATA DETECTED</div>
@@ -913,13 +1315,13 @@ function GymLog() {
             </div>
           )}
           {me.entries.map((e) => (
-            <div key={e.id} style={{ border: `1px solid ${C.line}`, borderRadius: 12, marginBottom: 8, overflow: "hidden", background: "#0A101E" }}>
+            <div key={e.id} id={`note-${e.id}`} style={{ border: `1px solid ${C.line}`, borderRadius: 12, marginBottom: 8, overflow: "hidden", background: "#0A101E" }}>
               <button onClick={() => setOpenPast(openPast === e.id ? null : e.id)} style={{
                 width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
                 padding: "12px 14px", background: "none", border: "none", color: C.text,
                 fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
               }}>
-                <span>{fmtDay(e.ts)} <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}>{fmtTime(e.ts)}</span> <span style={{ color: C.mut, fontWeight: 400, fontSize: 12 }}>{e.discipline ? `${e.discipline}(${e.category})` : e.category}</span></span>
+                <span>{fmtDay(e.ts)} <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}>{e.slot || fmtTime(e.ts)}</span> <span style={{ color: C.mut, fontWeight: 400, fontSize: 12 }}>{e.discipline ? `${e.discipline}(${e.category})` : e.category}{e.hours ? ` ・${e.hours}h` : ""}</span></span>
                 <span style={{ color: C.mut, fontSize: 12 }}>{openPast === e.id ? "閉じる" : "開く"}</span>
               </button>
               {openPast === e.id && (
@@ -928,11 +1330,74 @@ function GymLog() {
                     <Row label="意識したことへの一言" color={C.blue} text={e.focusMemo}/>
                   )}
                   {MEMO_FIELDS.map((f) => (e[f.key] || "").trim() ? <Row key={f.key} label={f.label} color={f.accent} text={e[f.key]}/> : null)}
-                  <button onClick={() => deleteEntry(e.id)} style={{ ...ghostBtn, marginTop: 4 }}>削除</button>
+                  {(me.videos || []).filter((v) => dayKey(v.ts) === dayKey(e.ts)).length > 0 && (
+                    <div style={{ marginTop: 6, marginBottom: 10 }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: C.cyan, marginBottom: 3 }}>この日の動画</div>
+                      {(me.videos || []).filter((v) => dayKey(v.ts) === dayKey(e.ts)).map((v) => (
+                        <div key={v.id} style={{ marginBottom: 10 }}>
+                          <YTCard url={v.url} note={v.note} maxWidth={260}/>
+                          {editVidNote && editVidNote.id === v.id ? (
+                            <div style={{ marginTop: 6 }}>
+                              <textarea value={editVidNote.text} onChange={(ev) => setEditVidNote({ id: v.id, text: ev.target.value })} rows={2}
+                                placeholder="例: 02:30 右フックをもらった" autoFocus
+                                style={{ width: "100%", background: "#0A101E", border: `1px solid ${C.line}`, borderRadius: 10, color: C.text, fontSize: 13, padding: "10px 12px", fontFamily: "inherit", resize: "vertical", lineHeight: 1.6, boxSizing: "border-box" }}/>
+                              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                                <button onClick={async () => { await saveVideoNote(v.id, editVidNote.text.trim()); setEditVidNote(null); }}
+                                  style={{ ...ghostBtn, color: C.cyan, borderColor: C.deep }}>メモを保存</button>
+                                <button onClick={() => setEditVidNote(null)} style={ghostBtn}>キャンセル</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <button onClick={() => setEditVidNote({ id: v.id, text: v.note || "" })}
+                              style={{ ...ghostBtn, marginTop: 6 }}>{(v.note || "").trim() ? "動画メモを編集" : "動画メモを追加"}</button>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                    <button onClick={() => startEdit(e)} style={{ ...ghostBtn, color: C.cyan, borderColor: C.deep }}>編集</button>
+                    <button onClick={() => deleteEntry(e.id)} style={ghostBtn}>削除</button>
+                  </div>
                 </div>
               )}
             </div>
           ))}
+          {/* AIサマリーノート */}
+          <div style={{
+            border: `1px solid ${C.blue}`, borderRadius: 12, padding: "12px 14px", marginTop: 14,
+            background: "linear-gradient(135deg, rgba(46,168,255,0.08) 0%, rgba(10,90,214,0.04) 100%)",
+            boxShadow: "0 0 16px rgba(46,168,255,0.12)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.22em", fontSize: 11, color: C.cyan, fontWeight: 700 }}>AI SUMMARY NOTE</span>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["week", "1週間"], ["month", "1ヶ月"]].map(([v, label]) => (
+                  <button key={v} onClick={() => setSummaryTab(v)} style={{
+                    fontSize: 11, fontWeight: 700, fontFamily: "inherit", cursor: "pointer",
+                    border: `1px solid ${summaryTab === v ? C.blue : C.line}`,
+                    background: summaryTab === v ? "rgba(46,168,255,0.15)" : "none",
+                    color: summaryTab === v ? C.cyan : C.mut, borderRadius: 999, padding: "4px 12px",
+                  }}>{label}のまとめ</button>
+                ))}
+              </div>
+            </div>
+            {noteAnalysis[summaryTab].top.length > 0 && (
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                {noteAnalysis[summaryTab].top.map(([k, n]) => (
+                  <span key={k} style={{
+                    fontSize: 11, fontFamily: "'Share Tech Mono', monospace",
+                    border: `1px solid ${C.deep}`, borderRadius: 999, padding: "2px 10px", color: C.cyan,
+                  }}>{k} ×{n}</span>
+                ))}
+              </div>
+            )}
+            <div style={{ fontSize: 13, lineHeight: 1.9 }}>
+              {noteAnalysis[summaryTab].text}
+              {noteAnalysis.loop.length > 0 && ` ちなみに${noteAnalysis.loop.map((k) => `「${k}」`).join("")}は数ヶ月前のメモにも登場していました。長く付き合っている課題のようなので、アプローチを少し変えてみるのも手かもしれません。`}
+            </div>
+
+          </div>
         </section>
 
         {/* ===== 6. MY DASHBOARD(優先度低のため下部へ) ===== */}
@@ -947,7 +1412,9 @@ function GymLog() {
                 borderRadius: 12, padding: "12px 6px", textAlign: "center",
                 cursor: "pointer", fontFamily: "inherit",
               }}>
-                <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 30, color: C.blue, textShadow: "0 0 14px rgba(46,168,255,0.45)" }}><CountUp value={v}/></div>
+                <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 28, color: C.blue, textShadow: "0 0 14px rgba(46,168,255,0.45)" }}>
+                  <CountUp value={v}/><span style={{ fontSize: 14 }}>h</span>
+                </div>
                 <div style={{ fontSize: 11, color: period === p ? C.cyan : C.mut, marginTop: 2 }}>{label}</div>
               </button>
             ))}
@@ -1013,6 +1480,63 @@ function GymLog() {
           </div>
         </section>
 
+        {/* ===== EXPERIMENTAL ZONE ===== */}
+        <section style={{ ...card, borderStyle: "dashed", borderColor: C.deep }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={eyebrow}>EXPERIMENTAL ZONE — 実装実験中</div>
+            <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 9, color: C.mut, border: `1px solid ${C.line}`, borderRadius: 999, padding: "1px 8px", marginBottom: 10 }}>BETA</span>
+          </div>
+
+          <div style={{ fontSize: 12, color: C.mut, marginBottom: 10 }}>EMOTION WAVE — メモの言葉から読み取る感情の波(直近{mood.points.length}回)</div>
+          {mood.points.length >= 2 ? (
+            <div>
+              <div style={{
+                display: "flex", alignItems: "stretch", gap: 4, height: 110,
+                borderBottom: `1px solid ${C.line}`, position: "relative", paddingBottom: 0,
+              }}>
+                {/* 中心線 */}
+                <div style={{ position: "absolute", left: 0, right: 0, top: "50%", height: 1, background: C.line }}/>
+                {mood.points.map((p, i) => {
+                  const h = Math.abs(p.score) / 3 * 46; // 半分の高さ46pxまで
+                  const pos = p.score >= 0;
+                  return (
+                    <div key={i} style={{ flex: 1, position: "relative" }} title={`${p.label}: ${p.score > 0 ? "+" : ""}${p.score}`}>
+                      <div style={{
+                        position: "absolute", left: "20%", right: "20%",
+                        [pos ? "bottom" : "top"]: "50%",
+                        height: Math.max(3, h),
+                        borderRadius: 3,
+                        background: p.score === 0 ? C.line : pos ? `linear-gradient(180deg, ${C.cyan}, ${C.blue})` : "linear-gradient(180deg, #FFB454, #B3661E)",
+                        boxShadow: pos && p.score >= 2 ? "0 0 10px rgba(95,217,255,0.5)" : "none",
+                      }}/>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                {mood.points.map((p, i) => (
+                  <div key={i} style={{ flex: 1, textAlign: "center", fontSize: 9, fontFamily: "'Share Tech Mono', monospace", color: C.mut }}>{p.label}</div>
+                ))}
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", gap: 14, marginTop: 6, fontSize: 10, color: C.mut }}>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: C.cyan, verticalAlign: "middle", marginRight: 4 }}/>ポジティブ</span>
+                <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: "#FFB454", verticalAlign: "middle", marginRight: 4 }}/>ネガティブ</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "16px 8px", border: `1px dashed ${C.line}`, borderRadius: 12 }}>
+              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue }}>ANALYZING...</div>
+            </div>
+          )}
+          <div style={{
+            marginTop: 12, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px",
+            fontSize: 12, lineHeight: 1.9, background: "#0A101E",
+          }}>
+            <span style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.2em", fontSize: 10, color: C.cyan, fontWeight: 700, marginRight: 8 }}>MENTAL AI</span>
+            {mood.advice}
+          </div>
+        </section>
+
         {/* ===== 7. 目安箱への入口(記入欄は遷移先) ===== */}
         <button onClick={() => setPage("suggestion")} style={{
           width: "100%", padding: "15px 0", borderRadius: 12, fontFamily: "inherit",
@@ -1020,6 +1544,49 @@ function GymLog() {
           fontSize: 14, fontWeight: 700, cursor: "pointer",
         }}>📮アプリの感想大募集＼(^o^)／</button>
       </main>
+
+      {/* 試合設定ポップアップ */}
+      {fightOpen && (
+        <div onClick={() => setFightOpen(false)} style={{
+          position: "fixed", inset: 0, background: "rgba(3,6,12,0.8)", display: "flex",
+          alignItems: "center", justifyContent: "center", zIndex: 50, padding: 24,
+        }}>
+          <div onClick={(e) => e.stopPropagation()} style={{
+            background: "linear-gradient(180deg, #0E1729 0%, #0B1220 100%)",
+            border: `1px solid ${FIGHT_ORANGE}`, borderRadius: 14, padding: "20px 18px",
+            width: "100%", maxWidth: 340, boxShadow: "0 0 40px rgba(255,122,47,0.3)",
+          }}>
+            <div style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.22em", fontSize: 12, color: FIGHT_ORANGE, fontWeight: 700, marginBottom: 12 }}>
+              FIGHT MODE — 試合設定
+            </div>
+            <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>試合の日</div>
+            <input type="date" value={fightDateDraft} onChange={(e) => setFightDateDraft(e.target.value)}
+              style={{ ...input, marginBottom: 10, colorScheme: "dark" }}/>
+            <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>テーマ(任意)</div>
+            <input type="text" value={fightThemeDraft} onChange={(e) => setFightThemeDraft(e.target.value)}
+              placeholder="例: 距離を支配する" maxLength={20} style={{ ...input, marginBottom: 14 }}/>
+            <button onClick={saveFight} style={{
+              width: "100%", padding: "13px 0", borderRadius: 12, border: "none", fontFamily: "inherit",
+              background: `linear-gradient(90deg, #C24E14, ${FIGHT_ORANGE})`, color: "#fff",
+              fontSize: 15, fontWeight: 700, cursor: "pointer", boxShadow: "0 0 16px rgba(255,122,47,0.35)",
+            }}>{fight ? "更新する" : "設定する"}</button>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              {fight && (
+                <button onClick={deleteFight} style={{
+                  flex: 1, padding: "10px 0", borderRadius: 10, fontFamily: "inherit",
+                  border: `1px solid ${C.line}`, background: "none", color: C.mut,
+                  fontSize: 13, fontWeight: 700, cursor: "pointer",
+                }}>削除</button>
+              )}
+              <button onClick={() => setFightOpen(false)} style={{
+                flex: 1, padding: "10px 0", borderRadius: 10, fontFamily: "inherit",
+                border: `1px solid ${C.line}`, background: "none", color: C.mut,
+                fontSize: 13, fontWeight: 700, cursor: "pointer",
+              }}>キャンセル</button>
+            </div>
+          </div>
+        </div>
+      )}
     </Shell>
   );
 }
