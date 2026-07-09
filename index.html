@@ -303,10 +303,10 @@ const FIGHT_PHRASES = [
   "今日の1時間が、当日の1秒の余裕になります。",
 ];
 const SAVE_PHRASES = [
-  "保存しました！今日も積み上げましたね💪",
-  "保存しました！この記録が当日の自信になります。",
-  "保存しました！確実に強くなっています。",
-  "保存しました！良い準備は良い結果を連れてきます。",
+  "今日も積み上げましたね💪",
+  "この記録が当日の自信になります。",
+  "確実に強くなっています。",
+  "良い準備は良い結果を連れてきます。",
 ];
 function slotOf(d) {
   const h = d.getHours();
@@ -429,6 +429,7 @@ function GymLog() {
   const [freeCat, setFreeCat] = useState("");
   const [draft, setDraft] = useState({ good: "", reflect: "", next: "", learned: "", focusMemo: "" });
   const [savedFlash, setSavedFlash] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
   const [openPast, setOpenPast] = useState(null);
   const [likersOpen, setLikersOpen] = useState(null); // ホバー/タップ中の投稿id
   const [editingId, setEditingId] = useState(null);   // 編集中のメモid
@@ -580,8 +581,8 @@ function GymLog() {
     setEditingId(null);
     setSlot(slotOf(new Date()));
     setHours("");
-    if (fightMode) flash(SAVE_PHRASES[Math.floor(Math.random() * SAVE_PHRASES.length)]);
-    setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1800);
+    if (fightMode) setSaveMsg(SAVE_PHRASES[Math.floor(Math.random() * SAVE_PHRASES.length)]);
+    setSavedFlash(true); setTimeout(() => { setSavedFlash(false); setSaveMsg(""); }, 2600);
   };
 
   // 過去メモを編集フォームに読み込む
@@ -1126,11 +1127,16 @@ function GymLog() {
           <button onClick={() => saveEntry(null)}
             disabled={!user || meMode === "none" || !(MEMO_FIELDS.some((f) => draft[f.key].trim()) || draft.focusMemo.trim())}
             style={{
-              width: "100%", padding: "15px 0", borderRadius: 12, border: "none",
+              width: "100%", padding: savedFlash ? "12px 14px" : "15px 0", borderRadius: 12, border: "none",
               background: savedFlash ? "#22D07A" : `linear-gradient(90deg, ${C.deep}, ${C.blue})`,
               color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-              boxShadow: "0 0 18px rgba(46,168,255,0.35)", opacity: user ? 1 : 0.5,
-            }}>{savedFlash ? "保存しました ✓" : editingId ? "更新する" : "保存する"}</button>
+              boxShadow: savedFlash ? "0 0 18px rgba(34,208,122,0.4)" : "0 0 18px rgba(46,168,255,0.35)",
+              opacity: user ? 1 : 0.5, lineHeight: 1.5, transition: "background 0.3s",
+            }}>
+              {savedFlash ? (
+                saveMsg ? <>保存しました✅<br/><span style={{ fontSize: 13, fontWeight: 500 }}>{saveMsg}</span></> : "保存しました✅"
+              ) : editingId ? "更新する" : "保存する"}
+            </button>
           <div style={{ fontSize: 11, color: C.mut, marginTop: 8 }}>
             メモの中身は自分だけに保存。仲間には「{user || "あなた"}さんが◯時に練習を記録しました」だけが共有されます
           </div>
