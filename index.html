@@ -1069,9 +1069,6 @@ function GymLog() {
             <div style={eyebrow}>FOCUS — 今回の練習で意識すること</div>
             <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>{prevFocus.next}</div>
             <div style={{ fontSize: 11, color: C.mut, margin: "4px 0 10px" }}>{fmtDay(prevFocus.ts)} の記録から引き継ぎ</div>
-            <input type="text" value={draft.focusMemo}
-              onChange={(e) => setDraft({ ...draft, focusMemo: e.target.value })}
-              placeholder="やってみてどうだった？一言メモ" style={input}/>
             {fightMode && (
               <div style={{
                 marginTop: 10, borderTop: "1px dashed rgba(255,122,47,0.4)", paddingTop: 10,
@@ -1088,7 +1085,7 @@ function GymLog() {
           <section style={{ ...card, borderStyle: "dashed" }}>
             <div style={eyebrow}>FOCUS — 今回の練習で意識すること</div>
             <div style={{ fontSize: 12, color: C.mut, lineHeight: 1.8 }}>
-              下のメモで「次回の練習で意識すること」を書くと、次からここに表示され、一言メモを残せます。
+              下のメモで「次回の練習で意識すること」を書くと、次からここに表示されます。
             </div>
             {fightMode && (
               <div style={{
@@ -1104,84 +1101,7 @@ function GymLog() {
           </section>
         )}
 
-        {/* ===== 2. MY DASHBOARD(積み上げた現実を最初に見る・コンパクト表示) ===== */}
-        <section style={{ ...card, padding: "12px 12px" }}>
-          <div style={{ ...eyebrow, fontSize: 10, marginBottom: 8 }}>MY DASHBOARD</div>
-          <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
-          {/* 左: ヒートマップ(セクション幅約75%・左に10px余白) */}
-          <div style={{ width: "75%", flexShrink: 0, paddingLeft: 10 }}>
-            {heat.total > 0 ? (
-              <div style={{ overflowX: "auto" }}>
-                <div style={{ minWidth: heat.cols.length > 7 ? 48 + heat.cols.length * 26 : 0 }}>
-                  {/* 列ヘッダー */}
-                  <div style={{ display: "grid", gridTemplateColumns: `48px repeat(${heat.cols.length}, 1fr)`, gap: 1, marginBottom: 2 }}>
-                    <div/>
-                    {heat.cols.map((c0) => (
-                      <div key={c0} style={{ fontSize: 8, color: C.mut, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap" }}>{c0.slice(0, 3)}</div>
-                    ))}
-                  </div>
-                  {/* 行(数字なし・色の濃淡のみ・隙間最小の横長セル) */}
-                  {DISCIPLINES.map((d0) => (
-                    <div key={d0} style={{ display: "grid", gridTemplateColumns: `48px repeat(${heat.cols.length}, 1fr)`, gap: 1, marginBottom: 1, alignItems: "center" }}>
-                      <div style={{ fontSize: 8, color: C.mut, fontWeight: 700, display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap" }}>{d0}</div>
-                      {heat.cols.map((c0) => {
-                        const c = heat.counts[`${d0}||${c0}`] || 0;
-                        return (
-                          <div key={c0} title={`${d0}(${c0}): ${c}回`} style={{
-                            height: 14, borderRadius: 3,
-                            transition: "background 0.4s, box-shadow 0.4s",
-                            ...heatStyle(c), color: "transparent",
-                          }}/>
-                        );
-                      })}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div style={{ minHeight: 80, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${C.line}`, borderRadius: 8 }}>
-                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: C.mut }}>NO DATA</span>
-              </div>
-            )}
-          </div>
-          {/* 右: 期間ボタン(縦並び)+凡例 */}
-          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-            {[["week", "WEEK", weekCount], ["month", "MONTH", monthCount], ["year", "YEAR", yearCount]].map(([p, label, v]) => (
-              <button key={p} onClick={() => setPeriod(p)} style={{
-                flex: 1, background: period === p ? "rgba(46,168,255,0.1)" : "#0A101E",
-                border: `1px solid ${period === p ? C.blue : C.line}`,
-                borderRadius: 8, padding: "3px 4px",
-                cursor: "pointer", fontFamily: "inherit",
-                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", lineHeight: 1.2,
-              }}>
-                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue, textShadow: "0 0 10px rgba(46,168,255,0.4)" }}><CountUp value={v}/><span style={{ fontSize: 9 }}>h</span></span>
-                <span style={{ fontSize: 8, letterSpacing: "0.1em", color: period === p ? C.cyan : C.mut }}>{label}</span>
-              </button>
-            ))}
-            {/* 凡例: Less → More */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, marginTop: 2 }}>
-              <span style={{ fontSize: 7, color: C.mut, marginRight: 2 }}>Less</span>
-              {[0, 1, 2, 3, 4].map((n) => (
-                <span key={n} style={{ width: 9, height: 9, borderRadius: 2.5, display: "inline-block", ...heatStyle(n), color: "transparent", boxShadow: "none" }}/>
-              ))}
-              <span style={{ fontSize: 7, color: C.mut, marginLeft: 2 }}>More</span>
-            </div>
-          </div>
-          </div>
-          {/* AIコーチ: 今週のアドバイス(コンパクト) */}
-          <div style={{
-            marginTop: 8, border: `1px solid ${C.blue}`, borderRadius: 10,
-            padding: "8px 10px", background: "linear-gradient(135deg, rgba(46,168,255,0.08) 0%, rgba(10,90,214,0.04) 100%)",
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-              <span style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.2em", fontSize: 9, color: C.cyan, fontWeight: 700 }}>COACH AI</span>
-              <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: C.blue, border: `1px solid ${C.deep}`, borderRadius: 999, padding: "0 6px" }}>{coachAdvice.tag}</span>
-            </div>
-            <div style={{ fontSize: 11, lineHeight: 1.7 }}>{coachAdvice.text}</div>
-          </div>
-        </section>
-
-        {/* ===== 3. 練習メモ(メイン) ===== */}
+        {/* ===== 2. 練習メモ(メイン) ===== */}
         <section style={{ ...card, ...(editingId ? { borderColor: "#FFB454" } : {}) }}>
           <button onClick={() => toggleSec("memo")} style={secHead}>
             <span style={{ ...eyebrow, marginBottom: 0, color: editingId ? "#FFB454" : C.cyan }}>
@@ -1258,7 +1178,84 @@ function GymLog() {
           </div>)}
         </section>
 
-        {/* ===== 3. 仲間のタイムライン(メタ情報のみ) ===== */}
+        {/* ===== 3. MY DASHBOARD(積み上げた現実を最初に見る・コンパクト表示) ===== */}
+        <section style={{ ...card, padding: "12px 12px" }}>
+          <div style={{ ...eyebrow, fontSize: 10, marginBottom: 8 }}>MY DASHBOARD</div>
+          <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+          {/* 左: ヒートマップ(セクション幅約75%・左に10px余白) */}
+          <div style={{ width: "75%", flexShrink: 0, paddingLeft: 10 }}>
+            {heat.total > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ minWidth: heat.cols.length > 7 ? 48 + heat.cols.length * 26 : 0 }}>
+                  {/* 列ヘッダー */}
+                  <div style={{ display: "grid", gridTemplateColumns: `48px repeat(${heat.cols.length}, 1fr)`, gap: 1, marginBottom: 2 }}>
+                    <div/>
+                    {heat.cols.map((c0) => (
+                      <div key={c0} style={{ fontSize: 8, color: C.mut, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap" }}>{c0.slice(0, 3)}</div>
+                    ))}
+                  </div>
+                  {/* 行(数字なし・色の濃淡のみ・隙間最小の横長セル) */}
+                  {DISCIPLINES.map((d0) => (
+                    <div key={d0} style={{ display: "grid", gridTemplateColumns: `48px repeat(${heat.cols.length}, 1fr)`, gap: 1, marginBottom: 1, alignItems: "center" }}>
+                      <div style={{ fontSize: 8, color: C.mut, fontWeight: 700, display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap" }}>{d0}</div>
+                      {heat.cols.map((c0) => {
+                        const c = heat.counts[`${d0}||${c0}`] || 0;
+                        return (
+                          <div key={c0} title={`${d0}(${c0}): ${c}回`} style={{
+                            height: 14, borderRadius: 3,
+                            transition: "background 0.4s, box-shadow 0.4s",
+                            ...heatStyle(c), color: "transparent",
+                          }}/>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ minHeight: 80, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${C.line}`, borderRadius: 8 }}>
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: C.mut }}>NO DATA</span>
+              </div>
+            )}
+          </div>
+          {/* 右: 期間ボタン(縦並び)+凡例 */}
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+            {[["week", "WEEK", weekCount], ["month", "MONTH", monthCount], ["year", "YEAR", yearCount]].map(([p, label, v]) => (
+              <button key={p} onClick={() => setPeriod(p)} style={{
+                flex: 1, background: period === p ? "rgba(46,168,255,0.1)" : "#0A101E",
+                border: `1px solid ${period === p ? C.blue : C.line}`,
+                borderRadius: 8, padding: "3px 4px",
+                cursor: "pointer", fontFamily: "inherit",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", lineHeight: 1.2,
+              }}>
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue, textShadow: "0 0 10px rgba(46,168,255,0.4)" }}><CountUp value={v}/><span style={{ fontSize: 9 }}>h</span></span>
+                <span style={{ fontSize: 8, letterSpacing: "0.1em", color: period === p ? C.cyan : C.mut }}>{label}</span>
+              </button>
+            ))}
+            {/* 凡例: Less → More */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, marginTop: 2 }}>
+              <span style={{ fontSize: 7, color: C.mut, marginRight: 2 }}>Less</span>
+              {[0, 1, 2, 3, 4].map((n) => (
+                <span key={n} style={{ width: 9, height: 9, borderRadius: 2.5, display: "inline-block", ...heatStyle(n), color: "transparent", boxShadow: "none" }}/>
+              ))}
+              <span style={{ fontSize: 7, color: C.mut, marginLeft: 2 }}>More</span>
+            </div>
+          </div>
+          </div>
+          {/* AIコーチ: 今週のアドバイス(コンパクト) */}
+          <div style={{
+            marginTop: 8, border: `1px solid ${C.blue}`, borderRadius: 10,
+            padding: "8px 10px", background: "linear-gradient(135deg, rgba(46,168,255,0.08) 0%, rgba(10,90,214,0.04) 100%)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+              <span style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.2em", fontSize: 9, color: C.cyan, fontWeight: 700 }}>COACH AI</span>
+              <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: C.blue, border: `1px solid ${C.deep}`, borderRadius: 999, padding: "0 6px" }}>{coachAdvice.tag}</span>
+            </div>
+            <div style={{ fontSize: 11, lineHeight: 1.7 }}>{coachAdvice.text}</div>
+          </div>
+        </section>
+
+        {/* ===== 4. 仲間のタイムライン(メタ情報のみ) ===== */}
         <section style={card}>
           <button onClick={() => toggleSec("feed")} style={secHead}>
             <span style={{ ...eyebrow, marginBottom: 0 }}>TEAM FEED — 仲間のタイムライン</span>
