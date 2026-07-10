@@ -35,10 +35,14 @@ const DISCIPLINES = ["キック", "ボクシング", "柔術", "グラ", "MMA", 
 const BASE_CATS = ["ミット", "スパー", "ドリル", "筋トレ", "ラン"];
 
 const MEMO_FIELDS = [
-  { key: "good", label: "できたこと", ph: "例: 距離を支配できた", accent: "#22D07A" },
-  { key: "reflect", label: "反省点", ph: "例: 詰められた時に下がりすぎた", accent: "#FFB454" },
+  { key: "good", label: "一言メモ", ph: "できたこと、反省点、教えてもらったこと、今後できるようになりたいこと", accent: "#22D07A" },
   { key: "next", label: "次回の練習で意識すること", ph: "例: 重心を低くする", accent: "#2EA8FF" },
-  { key: "learned", label: "教えてもらったこと・練習したいこと", ph: "例: 左に外れるステップの角度", accent: "#5FD9FF" },
+];
+// 過去メモの表示用(旧バージョンで記録したフィールドも表示できるように保持)
+const NOTE_FIELDS = [
+  ...MEMO_FIELDS,
+  { key: "reflect", label: "反省点", accent: "#FFB454" },
+  { key: "learned", label: "教えてもらったこと・練習したいこと", accent: "#5FD9FF" },
 ];
 
 const ME_KEY = "gymlog-me-v2";     // 個人: メモ本文（他人からは見えない）
@@ -424,6 +428,7 @@ function GymLog() {
   const now = new Date();
   const [slot, setSlot] = useState(slotOf(now)); // 時間帯(朝/昼/夕/夜)を現在時刻から自動セット
   const [hours, setHours] = useState("");        // 練習時間(h)
+  const [weight, setWeight] = useState("");      // 体重kg(試合モード時のみ表示)
   const [disc, setDisc] = useState(DISCIPLINES[0]);
   const [cat, setCat] = useState(BASE_CATS[0]);
   const [freeCat, setFreeCat] = useState("");
@@ -435,6 +440,8 @@ function GymLog() {
   const [editingId, setEditingId] = useState(null);   // 編集中のメモid
   const [delConfirm, setDelConfirm] = useState(null); // タイムライン削除の確認中id
   const [playing, setPlaying] = useState(null); // インライン再生中: "preview" | フィード投稿id
+  const [secOpen, setSecOpen] = useState({ memo: false, feed: false, video: false, notes: false }); // 折りたたみセクションの開閉
+  const toggleSec = (k) => setSecOpen((s) => ({ ...s, [k]: !s[k] }));
 
   // 動画
   const [videoUrl, setVideoUrl] = useState("");
@@ -482,7 +489,7 @@ function GymLog() {
     })();
   }, []);
 
-  // タイムラインを60秒ごとに自動更新(仲間のナイスファイト!や投稿を取り込む)
+  // タイムラインを60秒ごとに自動更新(仲間のおつかれ！や投稿を取り込む)
   useEffect(() => {
     if (!loaded) return;
     const iv = setInterval(async () => {
@@ -554,13 +561,14 @@ function GymLog() {
       return n === 0 ? slot : `${slot}${n + 1}`;
     };
     const hoursVal = hours !== "" && !isNaN(Number(hours)) ? Number(hours) : null;
+    const weightVal = weight !== "" && !isNaN(Number(weight)) ? Number(weight) : null;
 
     if (editingId) {
       // ---- 既存メモの更新(日付・投稿時刻は元のまま) ----
       const orig = me.entries.find((e) => e.id === editingId);
       if (!orig) { setEditingId(null); return; }
       const slotLabel = makeSlotLabel(orig.ts, editingId);
-      entry = { ...orig, discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, ...draft };
+      entry = { ...orig, discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, weight: weightVal, ...draft };
       nextMe = { ...me, entries: me.entries.map((e) => (e.id === editingId ? entry : e)), customCats: nextCustom };
       // フィード側も同idのメタ情報を更新(videoキーは持たせず既存を維持、likesはマージで保持)
       item = { id: editingId, user, ts: entry.ts, category: `${disc}(${category})`, slot: slotLabel, likes: [] };
@@ -568,7 +576,7 @@ function GymLog() {
       // ---- 新規メモ(投稿時刻は現在時刻) ----
       const ts = new Date();
       const slotLabel = makeSlotLabel(ts.toISOString(), null);
-      entry = { id: uid(), ts: ts.toISOString(), discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, ...draft };
+      entry = { id: uid(), ts: ts.toISOString(), discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, weight: weightVal, ...draft };
       nextMe = { ...me, entries: [entry, ...me.entries], customCats: nextCustom };
       item = { id: entry.id, user, ts: entry.ts, category: `${disc}(${category})`, slot: slotLabel, likes: [], comments: [], video: video && video.privacy === "unlisted" ? video : null };
     }
@@ -581,6 +589,7 @@ function GymLog() {
     setEditingId(null);
     setSlot(slotOf(new Date()));
     setHours("");
+    setWeight("");
     if (fightMode) setSaveMsg(SAVE_PHRASES[Math.floor(Math.random() * SAVE_PHRASES.length)]);
     setSavedFlash(true); setTimeout(() => { setSavedFlash(false); setSaveMsg(""); }, 2600);
   };
@@ -588,8 +597,10 @@ function GymLog() {
   // 過去メモを編集フォームに読み込む
   const startEdit = (e) => {
     setEditingId(e.id);
+    setSecOpen((s) => ({ ...s, memo: true }));
     setSlot(e.slotBase || (e.slot ? e.slot.replace(/\d+$/, "") : slotOf(new Date(e.ts))));
     setHours(e.hours != null ? String(e.hours) : "");
+    setWeight(e.weight != null ? String(e.weight) : "");
     setDisc(e.discipline || DISCIPLINES[0]);
     if ([...BASE_CATS, ...customCats].includes(e.category)) { setCat(e.category); setFreeCat(""); }
     else { setCat("__free__"); setFreeCat(e.category || ""); }
@@ -621,7 +632,7 @@ function GymLog() {
 
   const like = async (id) => {
     const target = feedData.items.find((s) => s.id === id);
-    if (target && target.likes.includes(user)) { flash("ナイスファイト済みです🥊"); return; }
+    if (target && target.likes.includes(user)) { flash(target.type === "fight" ? "がんばれ！済みです🔥" : "おつかれ！済みです🥊"); return; }
     const items = feedData.items.map((s) =>
       s.id === id ? { ...s, likes: [...new Set([...s.likes, user])] } : s
     );
@@ -652,10 +663,16 @@ function GymLog() {
   };
   const saveFight = async () => {
     if (!fightDateDraft) { flash("試合の日付を入力してください"); return; }
+    const dateChanged = !fight || fight.date !== fightDateDraft; // テーマだけの更新ではタイムラインに流さない
     const nextMe = { ...me, fight: { date: fightDateDraft, theme: fightThemeDraft.trim() } };
     setMe(nextMe);
     setFightOpen(false);
-    try { await saveMe(meMode, user, nextMe); flash("試合モードON！ここから仕上げていきましょう🔥"); } catch (e) { flash("保存に失敗しました"); }
+    try { await saveMe(meMode, user, nextMe); flash("試合モードON！ここから仕上げていきましょう🔥"); } catch (e) { flash("保存に失敗しました"); return; }
+    if (dateChanged) {
+      const d = new Date(`${fightDateDraft}T00:00:00`);
+      const item = { id: uid(), user, ts: new Date().toISOString(), type: "fight", fightLabel: `${d.getMonth() + 1}/${d.getDate()}`, likes: [], comments: [] };
+      try { setFeedData(await saveFeed(feedMode, { items: mergeFeed(feedData.items, [item]) })); } catch (e) { /* feed失敗は設定に影響なし */ }
+    }
   };
   const deleteFight = async () => {
     const nextMe = { ...me, fight: null };
@@ -743,7 +760,7 @@ function GymLog() {
   const heat = (() => {
     const from = periodStart(period);
     const inPeriod = me.entries.filter((s) => new Date(s.ts) >= from);
-    const cols = [...BASE_CATS, ...customCats];
+    const cols = [...BASE_CATS, "その他", ...customCats];
     inPeriod.forEach((s) => { if (s.category && !cols.includes(s.category)) cols.push(s.category); });
     const counts = {};
     let max = 0, total = 0;
@@ -837,6 +854,13 @@ function GymLog() {
     return { points, advice };
   }, [me.entries]);
 
+  // ---- 体重の推移(試合モード時のみ表示・直近10件) ----
+  const weightPoints = useMemo(() => {
+    return me.entries.filter((e) => typeof e.weight === "number")
+      .sort((a, b) => (a.ts > b.ts ? 1 : -1)).slice(-10)
+      .map((e) => { const d = new Date(e.ts); return { label: `${d.getMonth() + 1}/${d.getDate()}`, w: e.weight }; });
+  }, [me.entries]);
+
   // 回数→セル色(0: ブランク / 多いほど鮮やかなブルー)
   const heatStyle = (c) => {
     if (!c) return { background: "rgba(255,255,255,0.02)", border: `1px solid ${C.line}`, color: "transparent" };
@@ -862,6 +886,8 @@ function GymLog() {
   };
   const eyebrow = { fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.28em", fontSize: 12, color: C.cyan, fontWeight: 700, marginBottom: 10, textTransform: "uppercase" };
   const ghostBtn = { border: `1px solid ${C.line}`, background: "none", color: C.mut, borderRadius: 8, padding: "6px 14px", fontSize: 12, cursor: "pointer", fontFamily: "inherit" };
+  // 折りたたみセクションの見出しボタン
+  const secHead = { width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", background: "none", border: "none", padding: 0, cursor: "pointer", fontFamily: "inherit", textAlign: "left" };
 
   // ============ 目安箱ページ ============
   if (page === "suggestion") {
@@ -957,15 +983,6 @@ function GymLog() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {!fightMode && user && (
-            <button onClick={openFight} aria-label="試合設定" style={{
-              background: "#0A101E",
-              color: C.mut,
-              border: `1px solid ${C.line}`,
-              borderRadius: 10, padding: "9px 12px", fontSize: 12, fontWeight: 700,
-              fontFamily: "inherit", cursor: "pointer",
-            }}>試合</button>
-          )}
           {user && (
             <button onClick={() => { setNameInput(user); setUser(""); }} aria-label="名前を変更" style={{
               background: "#0A101E", color: C.mut, border: `1px solid ${C.line}`,
@@ -1035,6 +1052,17 @@ function GymLog() {
           </div>
         )}
 
+        {/* 非試合モード時: 同じ位置・同じ横幅で控えめな試合設定ボタン */}
+        {!fightMode && user && (
+          <button onClick={openFight} aria-label="試合設定" style={{
+            display: "block", width: "100%",
+            background: "#0A101E", color: C.mut,
+            border: `1px solid ${C.line}`,
+            borderRadius: 14, padding: "12px 16px", fontSize: 13, fontWeight: 700,
+            fontFamily: "inherit", cursor: "pointer", marginBottom: 16,
+          }}>試合モードON</button>
+        )}
+
         {/* ===== 1. 今回の練習で意識すること(前回から引き継ぎ) ===== */}
         {prevFocus ? (
           <section style={{ ...card, borderColor: C.blue }}>
@@ -1076,56 +1104,146 @@ function GymLog() {
           </section>
         )}
 
-        {/* ===== 2. 練習メモ(メイン) ===== */}
-        <section style={{ ...card, ...(editingId ? { borderColor: "#FFB454" } : {}) }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ ...eyebrow, color: editingId ? "#FFB454" : C.cyan }}>
-              {editingId ? "EDIT MODE — 記録を編集中" : "PRACTICE MEMO — 今日の練習メモ"}
-            </div>
-            {editingId && (
-              <button onClick={cancelEdit} style={{ ...ghostBtn, marginBottom: 10, borderColor: "#FFB454", color: "#FFB454" }}>編集をやめる</button>
+        {/* ===== 2. MY DASHBOARD(積み上げた現実を最初に見る・コンパクト表示) ===== */}
+        <section style={{ ...card, padding: "12px 12px" }}>
+          <div style={{ ...eyebrow, fontSize: 10, marginBottom: 8 }}>MY DASHBOARD</div>
+          <div style={{ display: "flex", gap: 10, alignItems: "stretch" }}>
+          {/* 左: ヒートマップ(セクション幅約75%・左に10px余白) */}
+          <div style={{ width: "75%", flexShrink: 0, paddingLeft: 10 }}>
+            {heat.total > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <div style={{ minWidth: heat.cols.length > 7 ? 48 + heat.cols.length * 26 : 0 }}>
+                  {/* 列ヘッダー */}
+                  <div style={{ display: "grid", gridTemplateColumns: `48px repeat(${heat.cols.length}, 1fr)`, gap: 1, marginBottom: 2 }}>
+                    <div/>
+                    {heat.cols.map((c0) => (
+                      <div key={c0} style={{ fontSize: 8, color: C.mut, textAlign: "center", overflow: "hidden", whiteSpace: "nowrap" }}>{c0.slice(0, 3)}</div>
+                    ))}
+                  </div>
+                  {/* 行(数字なし・色の濃淡のみ・隙間最小の横長セル) */}
+                  {DISCIPLINES.map((d0) => (
+                    <div key={d0} style={{ display: "grid", gridTemplateColumns: `48px repeat(${heat.cols.length}, 1fr)`, gap: 1, marginBottom: 1, alignItems: "center" }}>
+                      <div style={{ fontSize: 8, color: C.mut, fontWeight: 700, display: "flex", alignItems: "center", overflow: "hidden", whiteSpace: "nowrap" }}>{d0}</div>
+                      {heat.cols.map((c0) => {
+                        const c = heat.counts[`${d0}||${c0}`] || 0;
+                        return (
+                          <div key={c0} title={`${d0}(${c0}): ${c}回`} style={{
+                            height: 14, borderRadius: 3,
+                            transition: "background 0.4s, box-shadow 0.4s",
+                            ...heatStyle(c), color: "transparent",
+                          }}/>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div style={{ minHeight: 80, display: "flex", alignItems: "center", justifyContent: "center", border: `1px dashed ${C.line}`, borderRadius: 8 }}>
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: C.mut }}>NO DATA</span>
+              </div>
             )}
           </div>
-          <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-            <div style={{ flex: 1.1, minWidth: 0 }}>
+          {/* 右: 期間ボタン(縦並び)+凡例 */}
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+            {[["week", "WEEK", weekCount], ["month", "MONTH", monthCount], ["year", "YEAR", yearCount]].map(([p, label, v]) => (
+              <button key={p} onClick={() => setPeriod(p)} style={{
+                flex: 1, background: period === p ? "rgba(46,168,255,0.1)" : "#0A101E",
+                border: `1px solid ${period === p ? C.blue : C.line}`,
+                borderRadius: 8, padding: "3px 4px",
+                cursor: "pointer", fontFamily: "inherit",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", lineHeight: 1.2,
+              }}>
+                <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue, textShadow: "0 0 10px rgba(46,168,255,0.4)" }}><CountUp value={v}/><span style={{ fontSize: 9 }}>h</span></span>
+                <span style={{ fontSize: 8, letterSpacing: "0.1em", color: period === p ? C.cyan : C.mut }}>{label}</span>
+              </button>
+            ))}
+            {/* 凡例: Less → More */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2, marginTop: 2 }}>
+              <span style={{ fontSize: 7, color: C.mut, marginRight: 2 }}>Less</span>
+              {[0, 1, 2, 3, 4].map((n) => (
+                <span key={n} style={{ width: 9, height: 9, borderRadius: 2.5, display: "inline-block", ...heatStyle(n), color: "transparent", boxShadow: "none" }}/>
+              ))}
+              <span style={{ fontSize: 7, color: C.mut, marginLeft: 2 }}>More</span>
+            </div>
+          </div>
+          </div>
+          {/* AIコーチ: 今週のアドバイス(コンパクト) */}
+          <div style={{
+            marginTop: 8, border: `1px solid ${C.blue}`, borderRadius: 10,
+            padding: "8px 10px", background: "linear-gradient(135deg, rgba(46,168,255,0.08) 0%, rgba(10,90,214,0.04) 100%)",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+              <span style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.2em", fontSize: 9, color: C.cyan, fontWeight: 700 }}>COACH AI</span>
+              <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 8, color: C.blue, border: `1px solid ${C.deep}`, borderRadius: 999, padding: "0 6px" }}>{coachAdvice.tag}</span>
+            </div>
+            <div style={{ fontSize: 11, lineHeight: 1.7 }}>{coachAdvice.text}</div>
+          </div>
+        </section>
+
+        {/* ===== 3. 練習メモ(メイン) ===== */}
+        <section style={{ ...card, ...(editingId ? { borderColor: "#FFB454" } : {}) }}>
+          <button onClick={() => toggleSec("memo")} style={secHead}>
+            <span style={{ ...eyebrow, marginBottom: 0, color: editingId ? "#FFB454" : C.cyan }}>
+              {editingId ? "EDIT MODE — 記録を編集中" : "PRACTICE MEMO — 今日の練習メモ"}
+            </span>
+            <span style={{ color: C.mut, fontSize: 12 }}>{(secOpen.memo || editingId) ? "▲" : "▼"}</span>
+          </button>
+          {(secOpen.memo || editingId) && (<div style={{ marginTop: 12 }}>
+          {editingId && (
+            <button onClick={cancelEdit} style={{ ...ghostBtn, marginBottom: 10, borderColor: "#FFB454", color: "#FFB454" }}>編集をやめる</button>
+          )}
+          <div style={{ fontSize: 11, color: C.mut, marginBottom: 10 }}>
+            仲間に共有されるのは「種目・カテゴリ」のみです。メモの内容を他の人に見られることはありませんのでご安心ください。（管理者すら見れません）
+          </div>
+          <div style={{ display: "flex", gap: 5, marginBottom: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>時間帯</div>
-              <select value={slot} onChange={(e) => setSlot(e.target.value)} style={{ ...input, height: 46, padding: "0 6px" }} aria-label="時間帯">
+              <select value={slot} onChange={(e) => setSlot(e.target.value)} style={{ ...input, height: 46, padding: "0 4px" }} aria-label="時間帯">
                 {SLOTS.map((s0) => <option key={s0} value={s0}>{s0}</option>)}
               </select>
             </div>
-            <div style={{ width: 66, flexShrink: 0 }}>
+            <div style={{ width: fightMode ? 50 : 66, flexShrink: 0 }}>
               <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>時間h</div>
               <input type="number" inputMode="decimal" min="0" max="12" step="0.5" value={hours}
                 onChange={(e) => setHours(e.target.value)} placeholder="1.5"
-                style={{ ...input, height: 46, padding: "0 6px", textAlign: "center", fontFamily: "'Share Tech Mono', monospace" }} aria-label="練習時間"/>
+                style={{ ...input, height: 46, padding: "0 4px", textAlign: "center", fontFamily: "'Share Tech Mono', monospace" }} aria-label="練習時間"/>
             </div>
-            <div style={{ flex: 1.2, minWidth: 0 }}>
+            <div style={{ flex: 1.1, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>種目</div>
-              <select value={disc} onChange={(e) => setDisc(e.target.value)} style={{ ...input, height: 46, padding: "0 6px" }} aria-label="種目">
+              <select value={disc} onChange={(e) => setDisc(e.target.value)} style={{ ...input, height: 46, padding: "0 4px" }} aria-label="種目">
                 {DISCIPLINES.map((d0) => <option key={d0} value={d0}>{d0}</option>)}
               </select>
             </div>
-            <div style={{ flex: 1.2, minWidth: 0 }}>
+            <div style={{ flex: 1.1, minWidth: 0 }}>
               <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>カテゴリ</div>
-              <select value={cat} onChange={(e) => setCat(e.target.value)} style={{ ...input, height: 46, padding: "0 6px" }} aria-label="カテゴリ">
+              <select value={cat} onChange={(e) => setCat(e.target.value)} style={{ ...input, height: 46, padding: "0 4px" }} aria-label="カテゴリ">
                 {[...BASE_CATS, ...customCats].map((c0) => <option key={c0} value={c0}>{c0}</option>)}
                 <option value="__free__">その他</option>
               </select>
             </div>
+            {fightMode && (
+              <div style={{ width: 56, flexShrink: 0 }}>
+                <div style={{ fontSize: 11, color: C.mut, marginBottom: 4 }}>体重kg</div>
+                <input type="number" inputMode="decimal" min="0" max="200" step="0.1" value={weight}
+                  onChange={(e) => setWeight(e.target.value)} placeholder="66.5"
+                  style={{ ...input, height: 46, padding: "0 4px", textAlign: "center", fontFamily: "'Share Tech Mono', monospace" }} aria-label="体重"/>
+              </div>
+            )}
           </div>
           {cat === "__free__" && <input value={freeCat} onChange={(e) => setFreeCat(e.target.value)} placeholder="カテゴリ名を入力（次回から選択肢に追加されます）" style={{ ...input, marginTop: -4, marginBottom: 12 }}/>}
           {MEMO_FIELDS.map((f) => (
             <div key={f.key} style={{ marginBottom: 12 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, marginBottom: 6 }}>
                 <span style={{ width: 8, height: 8, borderRadius: 2, background: f.accent, flexShrink: 0 }}/>
-                {f.label}
+                {f.label}（あれば）
               </label>
               <textarea value={draft[f.key]} onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
                 placeholder={f.ph} rows={2} style={{ ...input, resize: "vertical", lineHeight: 1.6 }}/>
             </div>
           ))}
           <button onClick={() => saveEntry(null)}
-            disabled={!user || meMode === "none" || !(MEMO_FIELDS.some((f) => draft[f.key].trim()) || draft.focusMemo.trim())}
+            disabled={!user || meMode === "none" || !hours.trim() || (cat === "__free__" && !freeCat.trim())}
             style={{
               width: "100%", padding: savedFlash ? "12px 14px" : "15px 0", borderRadius: 12, border: "none",
               background: savedFlash ? "#22D07A" : `linear-gradient(90deg, ${C.deep}, ${C.blue})`,
@@ -1137,18 +1255,20 @@ function GymLog() {
                 saveMsg ? <>保存しました✅<br/><span style={{ fontSize: 13, fontWeight: 500 }}>{saveMsg}</span></> : "保存しました✅"
               ) : editingId ? "更新する" : "保存する"}
             </button>
-          <div style={{ fontSize: 11, color: C.mut, marginTop: 8 }}>
-            メモの中身は自分だけに保存。仲間には「{user || "あなた"}さんが◯時に練習を記録しました」だけが共有されます
-          </div>
+          </div>)}
         </section>
 
         {/* ===== 3. 仲間のタイムライン(メタ情報のみ) ===== */}
         <section style={card}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={eyebrow}>TEAM FEED — 仲間のタイムライン</div>
-            <button onClick={refreshFeed} style={{ ...ghostBtn, marginBottom: 10 }}>更新</button>
+          <button onClick={() => toggleSec("feed")} style={secHead}>
+            <span style={{ ...eyebrow, marginBottom: 0 }}>TEAM FEED — 仲間のタイムライン</span>
+            <span style={{ color: C.mut, fontSize: 12 }}>{secOpen.feed ? "▲" : "▼"}</span>
+          </button>
+          {secOpen.feed && (<div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: C.mut }}>見えるのは「誰が・いつ・何の練習をしたか」だけ。メモの中身は共有されません</div>
+            <button onClick={refreshFeed} style={{ ...ghostBtn, flexShrink: 0 }}>更新</button>
           </div>
-          <div style={{ fontSize: 11, color: C.mut, marginBottom: 10 }}>見えるのは「誰が・いつ・何の練習をしたか」だけ。メモの中身は共有されません</div>
           {feed.length === 0 && (
             <div style={{ textAlign: "center", padding: "18px 8px", border: `1px dashed ${C.line}`, borderRadius: 12 }}>
               <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue }}>NO ACTIVITY DETECTED</div>
@@ -1166,9 +1286,11 @@ function GymLog() {
                 }}>
                   <div style={{ fontSize: 14, lineHeight: 1.7 }}>
                     <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}>{fmtTime(s.ts)} </span>
-                    <b style={{ color: C.cyan }}>{s.user}</b>さんが
-                    <span style={{ display: "inline-block", border: `1px solid ${C.deep}`, borderRadius: 999, padding: "1px 10px", margin: "0 3px", fontSize: 12 }}>{s.slot ? `${s.slot}の` : ""}{fmtCat(s.category)}</span>
-                    を記録しました！
+                    {s.type === "fight" ? (
+                      <><b style={{ color: C.cyan }}>{s.user}</b>さんの試合が<b style={{ color: FIGHT_ORANGE }}>{s.fightLabel}</b>に決まりました！</>
+                    ) : (
+                      <><b style={{ color: C.cyan }}>{s.user}</b>さんが <b style={{ color: C.blue }}>{fmtCat(s.category)}</b> の練習を記録しました！</>
+                    )}
                   </div>
                   {s.video && s.video.url ? (
                     ytId(s.video.url)
@@ -1188,7 +1310,7 @@ function GymLog() {
                       background: s.likes.includes(user) ? "rgba(95,217,255,0.14)" : "none",
                       color: s.likes.includes(user) ? C.cyan : C.mut,
                       borderRadius: 999, padding: "6px 14px", cursor: "pointer",
-                    }}>🥊 ナイスファイト！</button>
+                    }}>{s.type === "fight" ? "🔥 がんばれ！" : "🥊 おつかれ！"}</button>
                     {s.video && s.video.url && ytId(s.video.url) && (
                       <button onClick={() => setCommentOpen(commentOpen === s.id ? null : s.id)} style={{
                         fontSize: 12, fontFamily: "inherit", fontWeight: 700,
@@ -1231,7 +1353,7 @@ function GymLog() {
                         padding: "8px 12px", fontSize: 12, lineHeight: 1.7, color: C.text,
                         boxShadow: "0 0 18px rgba(46,168,255,0.3)", maxWidth: 240,
                       }}>
-                        🥊 {s.likes.join("、")}
+                        {s.type === "fight" ? "🔥" : "🥊"} {s.likes.join("、")}
                       </div>
                     )}
                   </div>
@@ -1240,11 +1362,16 @@ function GymLog() {
             </div>
           ))}
           </div>
+          </div>)}
         </section>
 
-        {/* ===== 4. 動画 ===== */}
+        {/* ===== 5. 動画 ===== */}
         <section style={card}>
-          <div style={eyebrow}>VIDEO SYNC — 練習動画</div>
+          <button onClick={() => toggleSec("video")} style={secHead}>
+            <span style={{ ...eyebrow, marginBottom: 0 }}>VIDEO SYNC — 練習動画</span>
+            <span style={{ color: C.mut, fontSize: 12 }}>{secOpen.video ? "▲" : "▼"}</span>
+          </button>
+          {secOpen.video && (<div style={{ marginTop: 12 }}>
 
           {/* Step 1: YouTubeで投稿 */}
           <div style={{ border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px", marginBottom: 10, background: "#0A101E" }}>
@@ -1307,6 +1434,7 @@ function GymLog() {
                         <button
                           onClick={() => {
                             if (near) {
+                              setSecOpen((s) => ({ ...s, notes: true }));
                               setOpenPast(near.id);
                               setTimeout(() => {
                                 const el = document.getElementById(`note-${near.id}`);
@@ -1335,11 +1463,16 @@ function GymLog() {
               </div>
             );
           })()}
+          </div>)}
         </section>
 
-        {/* ===== 5. 自分の過去メモ ===== */}
+        {/* ===== 6. 自分の過去メモ ===== */}
         <section style={card}>
-          <div style={eyebrow}>MY NOTES — これまでの記録</div>
+          <button onClick={() => toggleSec("notes")} style={secHead}>
+            <span style={{ ...eyebrow, marginBottom: 0 }}>MY NOTES — これまでの記録</span>
+            <span style={{ color: C.mut, fontSize: 12 }}>{secOpen.notes ? "▲" : "▼"}</span>
+          </button>
+          {secOpen.notes && (<div style={{ marginTop: 12 }}>
 
           {me.entries.length === 0 && (
             <div style={{ textAlign: "center", padding: "18px 8px", border: `1px dashed ${C.line}`, borderRadius: 12 }}>
@@ -1362,7 +1495,7 @@ function GymLog() {
                   {(e.focusMemo || "").trim() && (
                     <Row label="意識したことへの一言" color={C.blue} text={e.focusMemo}/>
                   )}
-                  {MEMO_FIELDS.map((f) => (e[f.key] || "").trim() ? <Row key={f.key} label={f.label} color={f.accent} text={e[f.key]}/> : null)}
+                  {NOTE_FIELDS.map((f) => (e[f.key] || "").trim() ? <Row key={f.key} label={f.label} color={f.accent} text={e[f.key]}/> : null)}
                   {(me.videos || []).filter((v) => dayKey(v.ts) === dayKey(e.ts)).length > 0 && (
                     <div style={{ marginTop: 6, marginBottom: 10 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: C.cyan, marginBottom: 3 }}>この日の動画</div>
@@ -1431,86 +1564,37 @@ function GymLog() {
             </div>
 
           </div>
-        </section>
 
-        {/* ===== 6. MY DASHBOARD(優先度低のため下部へ) ===== */}
-        <section style={card}>
-          <div style={eyebrow}>MY DASHBOARD — {user || "あなた"}</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {[["week", "今週", weekCount], ["month", "今月", monthCount], ["year", "今年", yearCount]].map(([p, label, v]) => (
-              <button key={p} onClick={() => setPeriod(p)} style={{
-                background: period === p ? "rgba(46,168,255,0.1)" : "#0A101E",
-                border: `1px solid ${period === p ? C.blue : C.line}`,
-                boxShadow: period === p ? "0 0 16px rgba(46,168,255,0.25)" : "none",
-                borderRadius: 12, padding: "12px 6px", textAlign: "center",
-                cursor: "pointer", fontFamily: "inherit",
-              }}>
-                <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 28, color: C.blue, textShadow: "0 0 14px rgba(46,168,255,0.45)" }}>
-                  <CountUp value={v}/><span style={{ fontSize: 14 }}>h</span>
-                </div>
-                <div style={{ fontSize: 11, color: period === p ? C.cyan : C.mut, marginTop: 2 }}>{label}</div>
-              </button>
-            ))}
-          </div>
-          <div style={{ fontSize: 12, color: C.mut, margin: "12px 0 8px" }}>
-            {PERIOD_LABEL[period]}の練習マップ（種目 × カテゴリ）
-          </div>
-          {heat.total === 0 ? (
-            <div style={{ padding: "22px 8px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: `1px dashed ${C.line}`, borderRadius: 12 }}>
-              <div style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 13, color: C.blue }}>NO DATA DETECTED</div>
-              <div style={{ fontSize: 11, color: C.mut, marginTop: 4 }}>{PERIOD_LABEL[period]}の記録はまだありません</div>
-            </div>
-          ) : (
-            <div style={{ overflowX: heat.cols.length > 6 ? "auto" : "visible", paddingBottom: 4 }}>
-              <div style={{ minWidth: heat.cols.length > 6 ? 44 + heat.cols.length * 46 : 0 }}>
-                {/* 列ヘッダー */}
-                <div style={{ display: "grid", gridTemplateColumns: `44px repeat(${heat.cols.length}, 1fr)`, gap: 4, marginBottom: 4 }}>
-                  <div/>
-                  {heat.cols.map((c0) => (
-                    <div key={c0} style={{ fontSize: 10, color: C.mut, textAlign: "center", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c0.slice(0, 4)}</div>
-                  ))}
-                </div>
-                {/* 行 */}
-                {DISCIPLINES.map((d0) => (
-                  <div key={d0} style={{ display: "grid", gridTemplateColumns: `44px repeat(${heat.cols.length}, 1fr)`, gap: 4, marginBottom: 4 }}>
-                    <div style={{ fontSize: 11, color: C.text, fontWeight: 700, display: "flex", alignItems: "center" }}>{d0}</div>
-                    {heat.cols.map((c0) => {
-                      const c = heat.counts[`${d0}||${c0}`] || 0;
-                      return (
-                        <div key={c0} title={`${d0}(${c0}): ${c}回`} style={{
-                          aspectRatio: "1.4", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
-                          fontFamily: "'Share Tech Mono', monospace", fontSize: 13, fontWeight: 700,
-                          transition: "background 0.4s, box-shadow 0.4s",
-                          ...heatStyle(c),
-                        }}>{c || ""}</div>
-                      );
-                    })}
-                  </div>
-                ))}
-                {/* 凡例 */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 8 }}>
-                  <span style={{ fontSize: 10, color: C.mut }}>0回</span>
-                  {[0, 1, 2, 3, 4].map((n) => (
-                    <span key={n} style={{ width: 18, height: 12, borderRadius: 3, ...heatStyle(n), color: "transparent" }}/>
-                  ))}
-                  <span style={{ fontSize: 10, color: C.mut }}>4回以上</span>
-                </div>
-              </div>
+          {/* 体重メモ(試合モード時のみ・控えめに表示) */}
+          {fightMode && weightPoints.length >= 2 && (
+            <div style={{ marginTop: 12, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px", background: "#0A101E", opacity: 0.9 }}>
+              <div style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.15em", fontSize: 10, color: C.mut, fontWeight: 700, marginBottom: 6 }}>WEIGHT LOG — 体重メモ</div>
+              {(() => {
+                const ws = weightPoints.map((p) => p.w);
+                const min = Math.min(...ws), max = Math.max(...ws);
+                const range = Math.max(max - min, 0.5);
+                const W = 280, H = 60, PX = 14, PY = 14;
+                const pts = weightPoints.map((p, i) => ({
+                  x: PX + (W - PX * 2) * (i / (weightPoints.length - 1)),
+                  y: PY + (H - PY * 2) * (1 - (p.w - min) / range),
+                  ...p,
+                }));
+                return (
+                  <svg viewBox={`0 0 ${W} ${H + 12}`} style={{ width: "100%", display: "block" }} aria-label="体重の推移">
+                    <polyline points={pts.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={C.blue} strokeWidth="1.4" strokeOpacity="0.7"/>
+                    {pts.map((p, i) => (
+                      <g key={i}>
+                        <circle cx={p.x} cy={p.y} r="2.4" fill={C.bg} stroke={C.cyan} strokeWidth="1.2"/>
+                        <text x={p.x} y={p.y - 5} textAnchor="middle" fontSize="7" fill={C.mut} fontFamily="'Share Tech Mono', monospace">{p.w}</text>
+                        <text x={p.x} y={H + 9} textAnchor="middle" fontSize="7" fill={C.mut} fontFamily="'Share Tech Mono', monospace">{p.label}</text>
+                      </g>
+                    ))}
+                  </svg>
+                );
+              })()}
             </div>
           )}
-
-          {/* AIコーチ: 今週のアドバイス */}
-          <div style={{
-            marginTop: 14, border: `1px solid ${C.blue}`, borderRadius: 12,
-            padding: "12px 14px", background: "linear-gradient(135deg, rgba(46,168,255,0.08) 0%, rgba(10,90,214,0.04) 100%)",
-            boxShadow: "0 0 16px rgba(46,168,255,0.12)",
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <span style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.22em", fontSize: 11, color: C.cyan, fontWeight: 700 }}>COACH AI</span>
-              <span style={{ fontFamily: "'Share Tech Mono', monospace", fontSize: 10, color: C.blue, border: `1px solid ${C.deep}`, borderRadius: 999, padding: "1px 8px" }}>{coachAdvice.tag}</span>
-            </div>
-            <div style={{ fontSize: 13, lineHeight: 1.9 }}>{coachAdvice.text}</div>
-          </div>
+          </div>)}
         </section>
 
         {/* ===== EXPERIMENTAL ZONE ===== */}
