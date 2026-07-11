@@ -107,6 +107,14 @@ function fmtDay(iso) {
   return `${d.getMonth()+1}/${d.getDate()} (${["日","月","火","水","木","金","土"][d.getDay()]})`;
 }
 function dayKey(iso) { const d = new Date(iso); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
+// 深夜0-5時台は前日の練習として扱う(6:00〜28:00を1日とみなす区切り)
+function logicalDateStr(d) {
+  const dt = new Date(d);
+  if (dt.getHours() < 6) dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
+}
+function entryDayKey(e) { return e.date || dayKey(e.ts); }
+function entryDayDate(e) { return new Date(`${entryDayKey(e)}T00:00:00`); }
 function safeParse(raw, fallback) { try { const d = JSON.parse(raw); return d || fallback; } catch (e) { return fallback; } }
 function ytId(url) {
   if (!url) return null;
@@ -429,6 +437,8 @@ function GymLog() {
   const [slot, setSlot] = useState(slotOf(now)); // 時間帯(朝/昼/夕/夜)を現在時刻から自動セット
   const [hours, setHours] = useState("");        // 練習時間(h)
   const [weight, setWeight] = useState("");      // 体重kg(試合モード時のみ表示)
+  const [entryDate, setEntryDate] = useState(logicalDateStr(now)); // 記録日(自動入力は6:00-28:00区切り・編集可)
+  const [showWeightChart, setShowWeightChart] = useState(false); // 体重グラフの表示(ワンクッション)
   const [disc, setDisc] = useState(DISCIPLINES[0]);
   const [cat, setCat] = useState(BASE_CATS[0]);
   const [freeCat, setFreeCat] = useState("");
@@ -550,10 +560,10 @@ function GymLog() {
 
     let entry, nextMe, item;
     // 同日・同時間帯・同種目/カテゴリの記録に自動で番号を振る(朝, 朝2, 朝3...)
-    const makeSlotLabel = (refTs, excludeId) => {
+    const makeSlotLabel = (refDateKey, excludeId) => {
       const n = me.entries.filter((e) =>
         e.id !== excludeId &&
-        dayKey(e.ts) === dayKey(refTs) &&
+        entryDayKey(e) === refDateKey &&
         (e.slotBase || e.slot || "") === slot &&
         (e.discipline || "") === disc &&
         (e.category || "") === category
@@ -562,21 +572,20 @@ function GymLog() {
     };
     const hoursVal = hours !== "" && !isNaN(Number(hours)) ? Number(hours) : null;
     const weightVal = weight !== "" && !isNaN(Number(weight)) ? Number(weight) : null;
+    const slotLabel = makeSlotLabel(entryDate, editingId);
 
     if (editingId) {
-      // ---- 既存メモの更新(日付・投稿時刻は元のまま) ----
+      // ---- 既存メモの更新(投稿時刻は元のまま・日付欄は編集可) ----
       const orig = me.entries.find((e) => e.id === editingId);
       if (!orig) { setEditingId(null); return; }
-      const slotLabel = makeSlotLabel(orig.ts, editingId);
-      entry = { ...orig, discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, weight: weightVal, ...draft };
+      entry = { ...orig, discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, weight: weightVal, date: entryDate, ...draft };
       nextMe = { ...me, entries: me.entries.map((e) => (e.id === editingId ? entry : e)), customCats: nextCustom };
       // フィード側も同idのメタ情報を更新(videoキーは持たせず既存を維持、likesはマージで保持)
       item = { id: editingId, user, ts: entry.ts, category: `${disc}(${category})`, slot: slotLabel, likes: [] };
     } else {
-      // ---- 新規メモ(投稿時刻は現在時刻) ----
+      // ---- 新規メモ(投稿時刻は現在時刻・日付欄は記録日として別管理) ----
       const ts = new Date();
-      const slotLabel = makeSlotLabel(ts.toISOString(), null);
-      entry = { id: uid(), ts: ts.toISOString(), discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, weight: weightVal, ...draft };
+      entry = { id: uid(), ts: ts.toISOString(), discipline: disc, category, slot: slotLabel, slotBase: slot, hours: hoursVal, weight: weightVal, date: entryDate, ...draft };
       nextMe = { ...me, entries: [entry, ...me.entries], customCats: nextCustom };
       item = { id: entry.id, user, ts: entry.ts, category: `${disc}(${category})`, slot: slotLabel, likes: [], comments: [], video: video && video.privacy === "unlisted" ? video : null };
     }
@@ -590,6 +599,7 @@ function GymLog() {
     setSlot(slotOf(new Date()));
     setHours("");
     setWeight("");
+    setEntryDate(logicalDateStr(new Date()));
     if (fightMode) setSaveMsg(SAVE_PHRASES[Math.floor(Math.random() * SAVE_PHRASES.length)]);
     setSavedFlash(true); setTimeout(() => { setSavedFlash(false); setSaveMsg(""); }, 2600);
   };
@@ -601,6 +611,7 @@ function GymLog() {
     setSlot(e.slotBase || (e.slot ? e.slot.replace(/\d+$/, "") : slotOf(new Date(e.ts))));
     setHours(e.hours != null ? String(e.hours) : "");
     setWeight(e.weight != null ? String(e.weight) : "");
+    setEntryDate(entryDayKey(e));
     setDisc(e.discipline || DISCIPLINES[0]);
     if ([...BASE_CATS, ...customCats].includes(e.category)) { setCat(e.category); setFreeCat(""); }
     else { setCat("__free__"); setFreeCat(e.category || ""); }
@@ -611,6 +622,7 @@ function GymLog() {
   const cancelEdit = () => {
     setEditingId(null);
     setDraft({ good: "", reflect: "", next: "", learned: "", focusMemo: "" });
+    setEntryDate(logicalDateStr(new Date()));
   };
 
   // タイムラインから削除(自分の投稿のみ・墓標方式で全端末に反映)
@@ -750,7 +762,7 @@ function GymLog() {
     d.setHours(0, 0, 0, 0);
     return d;
   };
-  const hoursIn = (p) => me.entries.filter((s) => new Date(s.ts) >= periodStart(p))
+  const hoursIn = (p) => me.entries.filter((s) => entryDayDate(s) >= periodStart(p))
     .reduce((sum, s) => sum + (typeof s.hours === "number" ? s.hours : 0), 0);
   const weekCount = hoursIn("week");
   const monthCount = hoursIn("month");
@@ -759,7 +771,7 @@ function GymLog() {
   // 選択中の期間について「種目 × カテゴリ」のマトリクスを集計(ヒートマップ用)
   const heat = (() => {
     const from = periodStart(period);
-    const inPeriod = me.entries.filter((s) => new Date(s.ts) >= from);
+    const inPeriod = me.entries.filter((s) => entryDayDate(s) >= from);
     const cols = [...BASE_CATS, "その他", ...customCats];
     inPeriod.forEach((s) => { if (s.category && !cols.includes(s.category)) cols.push(s.category); });
     const counts = {};
@@ -779,13 +791,13 @@ function GymLog() {
     if (me.entries.length === 0) {
       return { tag: "READY", text: "記録を始めると、ここにAIコーチのアドバイスが表示されます。まずは今日の練習から！" };
     }
-    const newest = me.entries.reduce((a, b) => (a.ts > b.ts ? a : b));
-    const daysSince = (Date.now() - new Date(newest.ts).getTime()) / 86400000;
+    const newest = me.entries.reduce((a, b) => (entryDayKey(a) > entryDayKey(b) ? a : b));
+    const daysSince = (Date.now() - entryDayDate(newest).getTime()) / 86400000;
     if (daysSince >= 3) {
       return { tag: "REST DETECTED", text: "お疲れ気味ですか？焦る必要はありません。まずは5分間のシャドー（ドリル）か、軽いロードワークからギアを入れ直していきましょう！" };
     }
     const from = periodStart("week");
-    const wk = me.entries.filter((s) => new Date(s.ts) >= from);
+    const wk = me.entries.filter((s) => entryDayDate(s) >= from);
     const total = wk.length;
     if (total < 2) {
       return { tag: "WARMING UP", text: "今週のスタートを切りました！記録が増えるほどアドバイスの精度が上がります。この調子で積み上げていきましょう。" };
@@ -804,7 +816,7 @@ function GymLog() {
   const noteAnalysis = useMemo(() => {
     const now = Date.now();
     const within = (e, fromDays, toDays = 0) => {
-      const age = (now - new Date(e.ts).getTime()) / 86400000;
+      const age = (now - entryDayDate(e).getTime()) / 86400000;
       return age >= toDays && age < fromDays;
     };
     const hasText = (e) => entryText(e).trim().length > 0;
@@ -836,9 +848,9 @@ function GymLog() {
   // ---- EXPERIMENTAL: 感情スコアの推移(直近10セッション) ----
   const mood = useMemo(() => {
     const withText = me.entries.filter((e) => entryText(e).trim().length > 0)
-      .sort((a, b) => (a.ts > b.ts ? 1 : -1)).slice(-10);
+      .sort((a, b) => (entryDayKey(a) > entryDayKey(b) ? 1 : -1)).slice(-10);
     const points = withText.map((e) => {
-      const d = new Date(e.ts);
+      const d = entryDayDate(e);
       return { label: `${d.getMonth() + 1}/${d.getDate()}`, score: sentimentScore(entryText(e)) };
     });
     let advice;
@@ -857,8 +869,8 @@ function GymLog() {
   // ---- 体重の推移(試合モード時のみ表示・直近10件) ----
   const weightPoints = useMemo(() => {
     return me.entries.filter((e) => typeof e.weight === "number")
-      .sort((a, b) => (a.ts > b.ts ? 1 : -1)).slice(-10)
-      .map((e) => { const d = new Date(e.ts); return { label: `${d.getMonth() + 1}/${d.getDate()}`, w: e.weight }; });
+      .sort((a, b) => (entryDayKey(a) > entryDayKey(b) ? 1 : -1)).slice(-10)
+      .map((e) => { const d = entryDayDate(e); return { label: `${d.getMonth() + 1}/${d.getDate()}`, w: e.weight }; });
   }, [me.entries]);
 
   // 回数→セル色(0: ブランク / 多いほど鮮やかなブルー)
@@ -1113,6 +1125,13 @@ function GymLog() {
           {editingId && (
             <button onClick={cancelEdit} style={{ ...ghostBtn, marginBottom: 10, borderColor: "#FFB454", color: "#FFB454" }}>編集をやめる</button>
           )}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+            <div style={{ width: 132 }}>
+              <div style={{ fontSize: 11, color: C.mut, marginBottom: 4, textAlign: "right" }}>日付</div>
+              <input type="date" value={entryDate} onChange={(e) => setEntryDate(e.target.value)}
+                style={{ ...input, height: 40, padding: "0 8px", textAlign: "center", colorScheme: "dark" }} aria-label="記録日"/>
+            </div>
+          </div>
           <div style={{ fontSize: 11, color: C.mut, marginBottom: 10 }}>
             仲間に共有されるのは「種目・カテゴリ」のみです。メモの内容を他の人に見られることはありませんのでご安心ください。（管理者すら見れません）
           </div>
@@ -1423,7 +1442,7 @@ function GymLog() {
                 <div style={{ fontSize: 12, color: C.mut, marginBottom: 8 }}>保存動画(直近7日間)</div>
                 <div style={{ maxHeight: 132, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
                   {recent.map((v) => {
-                    const dayEntries = me.entries.filter((en) => dayKey(en.ts) === dayKey(v.ts));
+                    const dayEntries = me.entries.filter((en) => entryDayKey(en) === dayKey(v.ts));
                     const near = dayEntries[0];
                     const label = near && near.discipline ? `${near.discipline}(${near.category})` : "練習";
                     return (
@@ -1484,7 +1503,7 @@ function GymLog() {
                 padding: "12px 14px", background: "none", border: "none", color: C.text,
                 fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
               }}>
-                <span>{fmtDay(e.ts)} <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}>{e.slot || fmtTime(e.ts)}</span> <span style={{ color: C.mut, fontWeight: 400, fontSize: 12 }}>{e.discipline ? `${e.discipline}(${e.category})` : e.category}{e.hours ? ` ・${e.hours}h` : ""}</span></span>
+                <span>{fmtDay(`${entryDayKey(e)}T00:00:00`)} <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.blue }}>{e.slot || fmtTime(e.ts)}</span> {e.hours ? <span style={{ fontFamily: "'Share Tech Mono', monospace", color: C.mut, fontSize: 12 }}>{e.hours}h</span> : null} <span style={{ color: C.mut, fontWeight: 400, fontSize: 12 }}>{e.discipline ? `${e.discipline}(${e.category})` : e.category}{fightMode && e.weight != null ? ` ・${e.weight}kg` : ""}</span></span>
                 <span style={{ color: C.mut, fontSize: 12 }}>{openPast === e.id ? "閉じる" : "開く"}</span>
               </button>
               {openPast === e.id && (
@@ -1493,10 +1512,10 @@ function GymLog() {
                     <Row label="意識したことへの一言" color={C.blue} text={e.focusMemo}/>
                   )}
                   {NOTE_FIELDS.map((f) => (e[f.key] || "").trim() ? <Row key={f.key} label={f.label} color={f.accent} text={e[f.key]}/> : null)}
-                  {(me.videos || []).filter((v) => dayKey(v.ts) === dayKey(e.ts)).length > 0 && (
+                  {(me.videos || []).filter((v) => dayKey(v.ts) === entryDayKey(e)).length > 0 && (
                     <div style={{ marginTop: 6, marginBottom: 10 }}>
                       <div style={{ fontSize: 11, fontWeight: 700, color: C.cyan, marginBottom: 3 }}>この日の動画</div>
-                      {(me.videos || []).filter((v) => dayKey(v.ts) === dayKey(e.ts)).map((v) => (
+                      {(me.videos || []).filter((v) => dayKey(v.ts) === entryDayKey(e)).map((v) => (
                         <div key={v.id} style={{ marginBottom: 10 }}>
                           <YTCard url={v.url} note={v.note} maxWidth={260}/>
                           {editVidNote && editVidNote.id === v.id ? (
@@ -1562,33 +1581,44 @@ function GymLog() {
 
           </div>
 
-          {/* 体重メモ(試合モード時のみ・控えめに表示) */}
+          {/* 体重メモ(試合モード時のみ・控えめに表示・ワンクッションで表示切替) */}
           {fightMode && weightPoints.length >= 2 && (
             <div style={{ marginTop: 12, border: `1px solid ${C.line}`, borderRadius: 10, padding: "10px 12px", background: "#0A101E", opacity: 0.9 }}>
               <div style={{ fontFamily: "'Rajdhani', sans-serif", letterSpacing: "0.15em", fontSize: 10, color: C.mut, fontWeight: 700, marginBottom: 6 }}>WEIGHT LOG — 体重メモ</div>
-              {(() => {
-                const ws = weightPoints.map((p) => p.w);
-                const min = Math.min(...ws), max = Math.max(...ws);
-                const range = Math.max(max - min, 0.5);
-                const W = 280, H = 60, PX = 14, PY = 14;
-                const pts = weightPoints.map((p, i) => ({
-                  x: PX + (W - PX * 2) * (i / (weightPoints.length - 1)),
-                  y: PY + (H - PY * 2) * (1 - (p.w - min) / range),
-                  ...p,
-                }));
-                return (
-                  <svg viewBox={`0 0 ${W} ${H + 12}`} style={{ width: "100%", display: "block" }} aria-label="体重の推移">
-                    <polyline points={pts.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={C.blue} strokeWidth="1.4" strokeOpacity="0.7"/>
-                    {pts.map((p, i) => (
-                      <g key={i}>
-                        <circle cx={p.x} cy={p.y} r="2.4" fill={C.bg} stroke={C.cyan} strokeWidth="1.2"/>
-                        <text x={p.x} y={p.y - 5} textAnchor="middle" fontSize="7" fill={C.mut} fontFamily="'Share Tech Mono', monospace">{p.w}</text>
-                        <text x={p.x} y={H + 9} textAnchor="middle" fontSize="7" fill={C.mut} fontFamily="'Share Tech Mono', monospace">{p.label}</text>
-                      </g>
-                    ))}
-                  </svg>
-                );
-              })()}
+              {!showWeightChart ? (
+                <button onClick={() => setShowWeightChart(true)} style={{
+                  width: "100%", padding: "10px 0", borderRadius: 8, fontFamily: "inherit",
+                  border: `1px solid ${C.line}`, background: "none", color: C.mut,
+                  fontSize: 12, fontWeight: 700, cursor: "pointer",
+                }}>体重の変化を見る</button>
+              ) : (
+                <>
+                  {(() => {
+                    const ws = weightPoints.map((p) => p.w);
+                    const min = Math.min(...ws), max = Math.max(...ws);
+                    const range = Math.max(max - min, 0.5);
+                    const W = 280, H = 60, PX = 14, PY = 14;
+                    const pts = weightPoints.map((p, i) => ({
+                      x: PX + (W - PX * 2) * (i / (weightPoints.length - 1)),
+                      y: PY + (H - PY * 2) * (1 - (p.w - min) / range),
+                      ...p,
+                    }));
+                    return (
+                      <svg viewBox={`0 0 ${W} ${H + 12}`} style={{ width: "100%", display: "block" }} aria-label="体重の推移">
+                        <polyline points={pts.map((p) => `${p.x},${p.y}`).join(" ")} fill="none" stroke={C.blue} strokeWidth="1.4" strokeOpacity="0.7"/>
+                        {pts.map((p, i) => (
+                          <g key={i}>
+                            <circle cx={p.x} cy={p.y} r="2.4" fill={C.bg} stroke={C.cyan} strokeWidth="1.2"/>
+                            <text x={p.x} y={p.y - 5} textAnchor="middle" fontSize="7" fill={C.mut} fontFamily="'Share Tech Mono', monospace">{p.w}</text>
+                            <text x={p.x} y={H + 9} textAnchor="middle" fontSize="7" fill={C.mut} fontFamily="'Share Tech Mono', monospace">{p.label}</text>
+                          </g>
+                        ))}
+                      </svg>
+                    );
+                  })()}
+                  <button onClick={() => setShowWeightChart(false)} style={{ ...ghostBtn, marginTop: 6, width: "100%", textAlign: "center" }}>閉じる</button>
+                </>
+              )}
             </div>
           )}
           </div>)}
